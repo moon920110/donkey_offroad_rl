@@ -18,6 +18,7 @@ Options:
     --figure_format=png    The file format of the generated figure (see https://matplotlib.org/api/_as_gen/matplotlib.pyplot.savefig.html), e.g. 'png', 'pdf', 'svg', ...
 """
 import os
+import cv2
 import glob
 import random
 import json
@@ -31,6 +32,7 @@ from tensorflow.python import keras
 from docopt import docopt
 import numpy as np
 from PIL import Image
+from shutil import copyfile
 
 import donkeycar as dk
 from donkeycar.parts.datastore import Tub
@@ -39,6 +41,7 @@ from donkeycar.parts.keras import KerasLinear, KerasIMU,\
      KerasRNN_LSTM, KerasLatent, KerasLocalizer
 from donkeycar.parts.augment import augment_image
 from donkeycar.utils import *
+from normalizer import LN
 
 figure_format = 'png'
 
@@ -353,7 +356,7 @@ def train(cfg, tub_names, model_name, transfer_model, model_type, continuous, au
     print('collating %d records ...' % (len(records)))
     collate_records(records, gen_records, opts)
 
-    def generator(save_best, opts, data, batch_size, isTrainSet=True, min_records_to_train=1000):
+    def generator(save_best, opts, data, batch_size, isTrainSet=True, min_records_to_train=1000, ln=None):
         
         num_records = len(data)
 
@@ -400,9 +403,6 @@ def train(cfg, tub_names, model_name, transfer_model, model_type, continuous, au
             img_out = type(kl) is KerasLatent
             loc_out = type(kl) is KerasLocalizer
             
-            if img_out:
-                import cv2
-
             for key in keys:
 
                 if not key in data:
@@ -445,11 +445,15 @@ def train(cfg, tub_names, model_name, transfer_model, model_type, continuous, au
                             if aug:
                                 img_arr = augment_image(img_arr)
 
+                            if ln is not None:
+                                img_arr = ln.normalize_lightness(img_arr)
+
                             if cfg.CACHE_IMAGES:
                                 record['img_data'] = img_arr
+
                         else:
                             img_arr = record['img_data']
-                            
+
                         if img_out:                            
                             rz_img_arr = cv2.resize(img_arr, (127, 127)) / 255.0
                             out_img.append(rz_img_arr[:,:,0].reshape((127, 127, 1)))
@@ -506,8 +510,11 @@ def train(cfg, tub_names, model_name, transfer_model, model_type, continuous, au
                              mode='min',
                              cfg=cfg)
 
-    train_gen = generator(save_best, opts, gen_records, cfg.BATCH_SIZE, True)
-    val_gen = generator(save_best, opts, gen_records, cfg.BATCH_SIZE, False)
+    ln = None
+    if cfg.NORM_IMAGES_ILLUMINANCE:
+        ln = LN(model_name, tub_names[0])
+    train_gen = generator(save_best, opts, gen_records, cfg.BATCH_SIZE, True, ln=ln)
+    val_gen = generator(save_best, opts, gen_records, cfg.BATCH_SIZE, False, ln=ln)
     
     total_records = len(gen_records)
 

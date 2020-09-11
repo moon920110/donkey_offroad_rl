@@ -33,6 +33,7 @@ from donkeycar.parts.behavior import BehaviorPart
 from donkeycar.parts.file_watcher import FileWatcher
 from donkeycar.parts.launch import AiLaunch
 from donkeycar.utils import *
+from normalizer import LN
 
 def drive(cfg, model_path=None, use_joystick=False, model_type=None, camera_type='single', meta=[]):
     '''
@@ -291,6 +292,12 @@ def drive(cfg, model_path=None, use_joystick=False, model_type=None, camera_type
         from donkeycar.parts.sombrero import Sombrero
         s = Sombrero()
 
+    #Rotary Encoder added
+    if cfg.ENABLE_ROTARY_ENCODER:
+        from donkeycar.parts.encoder import RotaryEncoder
+        re = RotaryEncoder(mm_per_tick=5.469907)
+        V.add(re, outputs=['rotaryencoder/meter', 'rotaryencoder/meter_per_second', 'rotaryencoder/delta'], threaded=True)
+
     #IMU
     if cfg.HAVE_IMU:
         from donkeycar.parts.imu import IMU
@@ -305,9 +312,15 @@ def drive(cfg, model_path=None, use_joystick=False, model_type=None, camera_type
         '''
         def __init__(self, cfg):
             self.cfg = cfg
+            self.ln = None
+            if cfg.NORM_IMAGES_ILLUMINANCE:
+                self.ln = LN(model_path, train=False)
 
         def run(self, img_arr):
-            return normalize_and_crop(img_arr, self.cfg)
+            img = normalize_and_crop(img_arr, self.cfg)
+            if self.ln is not None:
+                img = self.ln.normalize_lightness(img_arr)
+            return img
 
     if "coral" in model_type:
         inf_input = 'cam/image_array'
@@ -322,6 +335,7 @@ def drive(cfg, model_path=None, use_joystick=False, model_type=None, camera_type
     if cfg.USE_FPV:
         V.add(WebFpv(), inputs=['cam/image_array'], threaded=True)
 
+
     #Behavioral state
     if cfg.TRAIN_BEHAVIORS:
         bh = BehaviorPart(cfg.BEHAVIOR_LIST)
@@ -332,6 +346,7 @@ def drive(cfg, model_path=None, use_joystick=False, model_type=None, camera_type
             pass
 
         inputs = [inf_input, "behavior/one_hot_state_array"]
+    
     #IMU
     elif model_type == "imu":
         assert(cfg.HAVE_IMU)
@@ -598,6 +613,10 @@ def drive(cfg, model_path=None, use_joystick=False, model_type=None, camera_type
         inputs += ['pilot/angle', 'pilot/throttle']
         types += ['float', 'float']
 
+    if cfg.ENABLE_ROTARY_ENCODER:
+        inputs += ['rotaryencoder/meter', 'rotaryencoder/meter_per_second', 'rotaryencoder/delta']
+        types += ['float', 'float', 'float']
+
     th = TubHandler(path=cfg.DATA_PATH)
     tub = th.new_tub_writer(inputs=inputs, types=types, user_meta=meta)
     V.add(tub, inputs=inputs, outputs=["tub/num_records"], run_condition='recording')
@@ -620,14 +639,13 @@ def drive(cfg, model_path=None, use_joystick=False, model_type=None, camera_type
         ctr.set_tub(tub)
 
         if cfg.BUTTON_PRESS_NEW_TUB:
-
             def new_tub_dir():
                 V.parts.pop()
                 tub = th.new_tub_writer(inputs=inputs, types=types, user_meta=meta)
                 V.add(tub, inputs=inputs, outputs=["tub/num_records"], run_condition='recording')
                 ctr.set_tub(tub)
 
-            ctr.set_button_down_trigger('cross', new_tub_dir)
+            ctr.set_button_down_trigger('X', new_tub_dir)
         ctr.print_controls()
 
     #run the vehicle for 20 seconds

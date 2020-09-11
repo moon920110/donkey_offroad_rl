@@ -89,19 +89,21 @@ HBRIDGE_PIN_RIGHT_BWD = 13
 # #The DEFAULT_MODEL_TYPE will choose which model will be created at training time. This chooses
 # #between different neural network designs. You can override this setting by passing the command
 # #line parameter --type to the python manage.py train and drive commands.
-# DEFAULT_MODEL_TYPE = 'linear'   #(linear|categorical|rnn|imu|behavior|3d|localizer|latent)
-# BATCH_SIZE = 128                #how many records to use when doing one pass of gradient decent. Use a smaller number if your gpu is running out of memory.
-# TRAIN_TEST_SPLIT = 0.8          #what percent of records to use for training. the remaining used for validation.
-# MAX_EPOCHS = 100                #how many times to visit all records of your data
+DEFAULT_MODEL_TYPE = 'linear'   #(linear|categorical|rnn|imu|behavior|3d|localizer|latent)
+BATCH_SIZE = 64 #how many records to use when doing one pass of gradient decent. Use a smaller number if your gpu is running out of memory.
+TRAIN_TEST_SPLIT = 0.8          #what percent of records to use for training. the remaining used for validation.
+MAX_EPOCHS = 100                #how many times to visit all records of your data
 # SHOW_PLOT = True                #would you like to see a pop up display of final loss?
-# VERBOSE_TRAIN = True             #would you like to see a progress bar with text during training?
-# USE_EARLY_STOP = True           #would you like to stop the training if we see it's not improving fit?
-# EARLY_STOP_PATIENCE = 5         #how many epochs to wait before no improvement
-# MIN_DELTA = .0005               #early stop will want this much loss change before calling it improved.
-# PRINT_MODEL_SUMMARY = True      #print layers and weights to stdout
-# OPTIMIZER = None                #adam, sgd, rmsprop, etc.. None accepts default
-# LEARNING_RATE = 0.001           #only used when OPTIMIZER specified
-# LEARNING_RATE_DECAY = 0.0       #only used when OPTIMIZER specified
+VERBOSE_TRAIN = True             #would you like to see a progress bar with text during training?
+USE_EARLY_STOP = True           #would you like to stop the training if we see it's not improving fit?
+EARLY_STOP_PATIENCE = 5         #how many epochs to wait before no improvement
+MIN_DELTA = .0005               #early stop will want this much loss change before calling it improved.
+PRINT_MODEL_SUMMARY = True      #print layers and weights to stdout
+OPTIMIZER = None                #adam, sgd, rmsprop, etc.. None accepts default
+LEARNING_RATE = 0.001           #only used when OPTIMIZER specified
+LEARNING_RATE_DECAY = 0.0       #only used when OPTIMIZER specified
+NORM_IMAGES_ILLUMINANCE = False
+DEFAULT_REF_IMG = './data/reference.jpg'
 # SEND_BEST_MODEL_TO_PI = False   #change to true to automatically send best model during training
 # CACHE_IMAGES = True             #keep images in memory. will speed succesive epochs, but crater if not enough mem.
 # 
@@ -117,7 +119,7 @@ HBRIDGE_PIN_RIGHT_BWD = 13
 # PI_USERNAME = "pi"                  # username on pi
 # PI_PASSWD = "cilab"             # password is optional. Only used from Windows machine. Ubuntu and mac users should copy their public keys to the pi. `ssh-copy-id username@hostname`
 # PI_HOSTNAME = "raspberrypi.local"   # the network hostname or ip address
-# PI_DONKEY_ROOT = "/home/pi/mycar"   # the location of the mycar dir on the pi. this will be used to help locate the final model destination.
+# PI_DONKEY_ROOT = "/home/pi/offroad_driving"   # the location of the mycar dir on the pi. this will be used to help locate the final model destination.
 # 
 # # Region of interst cropping
 # # only supported in Categorical and Linear models.
@@ -232,7 +234,7 @@ JOYSTICK_DEVICE_FILE = "/dev/input/js0" # this is the unix file use to access th
 # #to predict the segement of the course, where the course is divided into NUM_LOCATIONS segments.
 # TRAIN_LOCALIZER = False
 # NUM_LOCATIONS = 10
-# BUTTON_PRESS_NEW_TUB = False #when enabled, makes it easier to divide our data into one tub per track length if we make a new tub on each X button press.
+BUTTON_PRESS_NEW_TUB = True #when enabled, makes it easier to divide our data into one tub per track length if we make a new tub on each X button press.
 # 
 # #DonkeyGym
 # #Only on Ubuntu linux, you can use the simulator as a virtual donkey and
@@ -258,8 +260,8 @@ JOYSTICK_DEVICE_FILE = "/dev/input/js0" # this is the unix file use to access th
 # #When racing, to give the ai a boost, configure these values.
 # AI_LAUNCH_DURATION = 0.0            # the ai will output throttle for this many seconds
 # AI_LAUNCH_THROTTLE = 0.0            # the ai will output this throttle value
-# AI_LAUNCH_ENABLE_BUTTON = 'R2'      # this keypress will enable this boost. It must be enabled before each use to prevent accidental trigger.
-# AI_LAUNCH_KEEP_ENABLED = False      # when False ( default) you will need to hit the AI_LAUNCH_ENABLE_BUTTON for each use. This is safest. When this True, is active on each trip into "local" ai mode.
+AI_LAUNCH_ENABLE_BUTTON = 'R2'      # this keypress will enable this boost. It must be enabled before each use to prevent accidental trigger.
+AI_LAUNCH_KEEP_ENABLED = False      # when False ( default) you will need to hit the AI_LAUNCH_ENABLE_BUTTON for each use. This is safest. When this True, is active on each trip into "local" ai mode.
 # 
 # #Scale the output of the throttle of the ai pilot for all model types.
 # AI_THROTTLE_MULT = 1.0              # this multiplier will scale every throttle value for all output from NN models
@@ -286,3 +288,6 @@ JOYSTICK_DEVICE_FILE = "/dev/input/js0" # this is the unix file use to access th
 # STOP_SIGN_DETECTOR = False
 # STOP_SIGN_MIN_SCORE = 0.2
 # STOP_SIGN_SHOW_BOUNDING_BOX = True
+
+# SENSEORS
+ENABLE_ROTARY_ENCODER = True # True to capture odometer sensor value
