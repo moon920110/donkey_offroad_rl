@@ -35,6 +35,7 @@ from donkeycar.parts.launch import AiLaunch
 from donkeycar.parts.controller import get_js_controller
 from donkeycar.utils import *
 from normalizer import LN
+from Keras_DDPG import DDPG
 
 
 class RL_Driver():
@@ -48,10 +49,11 @@ class RL_Driver():
         self.meta = meta
         self.training = training
 
-        self.th = None
-        self.ctr = None
+        self.th = TubHandler(path=self.cfg.DATA_PATH)
+        self.ctr = get_js_controller(self.cfg)
         self.emergency_stopped = False
         self.goal = False
+        self.go_train = False
 
         self._setup_vihecle()
         if self.training:
@@ -65,9 +67,9 @@ class RL_Driver():
         V.start(rate_hz=cfg.DRIVE_LOOP_HZ,
                 max_loop_count=cfg.MAX_LOOPS)
 
-    def step(self, action):
+    def step(self, actions):
         # Get outputs and apply it to car. 
-        self.V.mem.put(['pilot/angle', 'pilot/throttle'], action)
+        self.V.mem.put(['pilot/angle', 'pilot/throttle'], actions)
         self.V.update_parts()
 
         # Then return the next obs, reward, done, info
@@ -89,6 +91,34 @@ class RL_Driver():
     
         return obs
 
+    def train(self):
+        # input shape: (b, h, w, c)
+        model = DDPG(num_action=2, input_shape=(120, 160, 3))
+        model.compile()
+        try:
+            while 1:
+                if self.get_trainable():
+                    obs = self.reset()
+                    done = False
+                    while not done:
+                        img = obs['img']
+                        speed = obs['speed']
+
+                        actions = model.run(np.expand_dims(img, axis=0), speed)
+                        obs, reward, done = self.step(actions)
+
+                        # TODO: implement last state, current state
+                        # TODO: memorize step, if len(mem) > train -> train()
+                        if done:
+                            pass
+
+        finally:
+            self.stop()
+
+
+    def get_trainable(self):
+        return self.go_train
+
     def _start_parts_thread(self):
         for entry in self.V.parts:
             if entry.get('thread'):
@@ -97,32 +127,32 @@ class RL_Driver():
     def _set_new_tube(self):
         #add tub to save data
         inputs=['cam/image_array',
-                'user/angle', 'user/throttle',
-                'user/mode']
+                'angle', 'throttle',
+                'user/mode', 'stop_condition']
 
         types=['image_array',
                'float', 'float',
-               'str']
-
-        if self.cfg.RECORD_DURING_AI:
-            inputs += ['pilot/angle', 'pilot/throttle']
-            types += ['float', 'float']
+               'str', 'int']
 
         if self.cfg.ENABLE_ROTARY_ENCODER:
             inputs += ['rotaryencoder/meter', 'rotaryencoder/meter_per_second', 'rotaryencoder/delta']
             types += ['float', 'float', 'float']
 
-        self.th = TubHandler(path=self.cfg.DATA_PATH)
         tub = self.th.new_tub_writer(inputs=inputs, types=types, user_meta=self.meta)
-        self.V.add(tub, inputs=inputs, outputs=["tub/num_records"], run_condition='recording')
+        if isinstance(self.V.parts[-1]['part'], type(tub)):
+            self.V.parts.pop()
+        self.V.add(tub, inputs=inputs, outputs=["tub/num_records"])
 
         #tell the controller about the tub
         self.ctr.set_tub(tub)
 
     def _get_state(self):
+        img = self.V.mem.get(['cam/image_array'])[0]
+        speed = self.V.mem.get(['rotaryencoder/meter_per_second'])[0]
+
         observation = {
-                'img': self.V.mem.get(['cam/image_array']),
-                'speed': self.V.mem.get(['rotaryencoder/meter_per_second']),
+                'img': img,
+                'speed': speed,
                 }
 
         return observation
@@ -135,19 +165,17 @@ class RL_Driver():
         return meter + emergency_stop + goal
 
     def _setup_controller(self):
-        self.ctr = get_js_controller(self.cfg)
         self.V.add(self.ctr, 
           inputs=['cam/image_array'],
-          outputs=['user/angle', 'user/throttle', 'user/mode', 'recording'],
+          outputs=['user/angle', 'user/throttle', 'user/mode', 'recording_false'],
           threaded=True)
 
         def emergency_stop():
             # Modified emergency stop
             print('E-Stop!!!')
             self.ctr.mode = 'user'
-            self.ctr.recording = False
             self.ctr.constant_throttle = False
-            self.ctr.estop_state = self.ctr.ES_STAT
+            self.ctr.estop_state = self.ctr.ES_START
             self.ctr.throttle = 0.0
             self.emergency_stopped = True
         self.ctr.set_button_down_trigger('A', emergency_stop)
@@ -156,9 +184,8 @@ class RL_Driver():
             # When the donkey reach the goal
             print('Episode SUCESSED!!!!!')
             self.ctr.mode = 'user'
-            self.ctr.recording = False
             self.ctr.constant_throttle = False
-            self.ctr.estop_state = self.ctr.ES_STAT
+            self.ctr.estop_state = self.ctr.ES_START
             self.ctr.throttle = 0.0
             self.goal = True
         self.ctr.set_button_down_trigger('Y', success_episode)
@@ -167,7 +194,7 @@ class RL_Driver():
             # Start RL Episode
             print("New Episode Start!!!")
             self.ctr.mode = 'rl_pilot'
-            self.ctr.recording = True
+            self.go_train = True
         self.ctr.set_button_down_trigger('B', start_rl_episode)
 
     def _setup_vihecle(self):
@@ -193,6 +220,21 @@ class RL_Driver():
                     return True
 
         self.V.add(PilotCondition(), inputs=['user/mode'], outputs=['run_pilot'])
+
+        class StopChecker:
+            def __init__(self, outer):
+                self.outer = outer
+
+            def run(self):
+                if not self.outer.emergency_stopped and not self.outer.goal:
+                    return 0
+                elif self.outer.emergency_stopped:
+                    self.outer.go_train = False
+                    return 1
+                elif self.outer.goal:
+                    self.outer.go_train = False
+                    return 2
+        self.V.add(StopChecker(self), inputs=[], outputs=['stop_condition'])
 
         def get_record_alert_color(num_records):
             col = (0, 0, 0)
@@ -314,6 +356,9 @@ class RL_Driver():
         
         #Choose what inputs should change the car.
         class DriveMode:
+            def __init__(self, outer):
+                self.outer = outer
+
             def run(self, mode,
                         user_angle, user_throttle,
                         pilot_angle, pilot_throttle):
@@ -324,9 +369,9 @@ class RL_Driver():
                     return pilot_angle if pilot_angle else 0.0, user_throttle
 
                 else:
-                    return pilot_angle if pilot_angle else 0.0, pilot_throttle * self.cfg.AI_THROTTLE_MULT if pilot_throttle else 0.0
+                    return pilot_angle if pilot_angle else 0.0, pilot_throttle * self.outer.cfg.AI_THROTTLE_MULT if pilot_throttle else 0.0
 
-        self.V.add(DriveMode(),
+        self.V.add(DriveMode(self),
               inputs=['user/mode', 'user/angle', 'user/throttle',
                       'pilot/angle', 'pilot/throttle'],
               outputs=['angle', 'throttle'])
@@ -391,7 +436,5 @@ if __name__ == '__main__':
         transfer = args['--transfer']
 
         rd = RL_Driver(cfg)
-        obs = rd.reset()
-        while True:
-            time.sleep(1)
-            obs, reward, done = rd.step([0, 1])
+        rd.train()
+
