@@ -31,7 +31,7 @@ CAMERA_HFLIP = False
 CSIC_CAM_GSTREAMER_FLIP_PARM = 0 # (0 => none , 4 => Flip horizontally, 6 => Flip vertically)
 # 
 # For IMAGE_LIST camera
-PATH_MASK = "~/offroad_driving/data/tub_1_20-03-12/*.jpg"
+PATH_MASK = "~/donkey_offroad_rl/data/tub_1_20-03-12/*.jpg"
 # 
 # #9865, over rides only if needed, ie. TX2..
 PCA9685_I2C_ADDR = 0x40     #I2C address, use i2cdetect to validate this number
@@ -119,7 +119,7 @@ DEFAULT_REF_IMG = './data/reference.jpg'
 # PI_USERNAME = "pi"                  # username on pi
 # PI_PASSWD = "cilab"             # password is optional. Only used from Windows machine. Ubuntu and mac users should copy their public keys to the pi. `ssh-copy-id username@hostname`
 # PI_HOSTNAME = "raspberrypi.local"   # the network hostname or ip address
-# PI_DONKEY_ROOT = "/home/pi/offroad_driving"   # the location of the mycar dir on the pi. this will be used to help locate the final model destination.
+# PI_DONKEY_ROOT = "/home/pi/donkey_offroad_rl"   # the location of the mycar dir on the pi. this will be used to help locate the final model destination.
 # 
 # # Region of interst cropping
 # # only supported in Categorical and Linear models.
