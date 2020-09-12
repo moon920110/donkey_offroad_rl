@@ -179,6 +179,31 @@ def drive(cfg, model_path=None, use_joystick=False, model_type=None, camera_type
           outputs=['user/angle', 'user/throttle', 'user/mode', 'recording'],
           threaded=True)
 
+    class StopChecker:
+        def __init__(self):
+            '''
+            0 - normal
+            1 - emergency stop
+            2 - success
+            3 - recording pending -> 0
+            -----------------------------------
+            FSM
+            0 -> 1, 2, -> 3 -> 0
+            '''
+            self.stop_condition = 0
+
+        def run(self):
+            stop_condition = self.stop_condition
+            if self.stop_condition == 1 or self.stop_condition == 2:
+                self.stop_condition = 3
+            elif self.stop_condition == 3:
+                self.stop_condition = 0
+
+            return stop_condition
+
+    stop_checker = StopChecker()
+    V.add(stop_checker, inputs=[], outputs=['stop_condition'])
+    
     #this throttle filter will allow one tap back for esc reverse
     th_filter = ThrottleFilter()
     V.add(th_filter, inputs=['user/throttle'], outputs=['user/throttle'])
@@ -488,13 +513,18 @@ def drive(cfg, model_path=None, use_joystick=False, model_type=None, camera_type
         '''
         return True when ai mode, otherwize respect user mode recording flag
         '''
-        def run(self, mode, recording):
+        def run(self, mode, recording, stop_condition):
             if mode == 'user':
-                return recording
+                if stop_condition == 0:
+                    return recording
+                elif stop_condition == 1 or stop_condition == 2:
+                    return True
+                else:
+                    return recording
             return True
 
     if cfg.RECORD_DURING_AI:
-        V.add(AiRecordingCondition(), inputs=['user/mode', 'recording'], outputs=['recording'])
+        V.add(AiRecordingCondition(), inputs=['user/mode', 'recording', 'stop_condition'], outputs=['recording'])
 
     #Drive train setup
     if cfg.DONKEY_GYM or cfg.DRIVE_TRAIN_TYPE == "MOCK":
@@ -588,11 +618,11 @@ def drive(cfg, model_path=None, use_joystick=False, model_type=None, camera_type
 
     inputs=['cam/image_array',
             'user/angle', 'user/throttle',
-            'user/mode']
+            'user/mode', 'stop_condition']
 
     types=['image_array',
            'float', 'float',
-           'str']
+           'str', 'int']
 
     if cfg.TRAIN_BEHAVIORS:
         inputs += ['behavior/state', 'behavior/label', "behavior/one_hot_state_array"]
@@ -647,6 +677,26 @@ def drive(cfg, model_path=None, use_joystick=False, model_type=None, camera_type
 
             ctr.set_button_down_trigger('X', new_tub_dir)
         ctr.print_controls()
+ 
+    def emergency_stop():
+        print("E-Stop!!!")
+        ctr.mode = 'user'
+        ctr.recording = False
+        stop_checker.stop_condition = 1
+        ctr.constant_throttle = False
+        ctr.estop_state = ctr.ES_START
+        ctr.throttle = 0.0
+    ctr.set_button_down_trigger('A', emergency_stop)
+
+    def success_episode():
+        print("Episode Sucessed!!!!!")
+        ctr.mode = 'user'
+        ctr.recording = False
+        stop_checker.stop_condition = 2
+        ctr.constant_throttle = False
+        ctr.estop_state = ctr.ES_START
+        ctr.throttle = 0.0
+    ctr.set_button_down_trigger('Y', success_episode)
 
     #run the vehicle for 20 seconds
     V.start(rate_hz=cfg.DRIVE_LOOP_HZ,
