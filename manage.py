@@ -33,6 +33,7 @@ from donkeycar.parts.behavior import BehaviorPart
 from donkeycar.parts.file_watcher import FileWatcher
 from donkeycar.parts.launch import AiLaunch
 from donkeycar.utils import *
+from donkeycar.parts.encoder import RotaryEncoder
 from normalizer import LN
 
 def drive(cfg, model_path=None, use_joystick=False, model_type=None, camera_type='single', meta=[]):
@@ -319,7 +320,6 @@ def drive(cfg, model_path=None, use_joystick=False, model_type=None, camera_type
 
     #Rotary Encoder added
     if cfg.ENABLE_ROTARY_ENCODER:
-        from donkeycar.parts.encoder import RotaryEncoder
         re = RotaryEncoder(mm_per_tick=5.469907)
         V.add(re, outputs=['rotaryencoder/meter', 'rotaryencoder/meter_per_second', 'rotaryencoder/delta'], threaded=True)
 
@@ -658,6 +658,16 @@ def drive(cfg, model_path=None, use_joystick=False, model_type=None, camera_type
         V.add(ImgArrToJpg(), inputs=['cam/image_array'], outputs=['jpg/bin'])
         V.add(pub, inputs=['jpg/bin'])
 
+    def reset_rotaryencoder():
+        print("INIT Rotary Encoder")
+        for i, part in enumerate(V.parts):
+            if isinstance(part['part'], RotaryEncoder):
+                part['part'].shutdown()
+                V.parts.pop(i)
+        re = RotaryEncoder(mm_per_tick=5.469907)
+        V.add(re, outputs=['rotaryencoder/meter', 'rotaryencoder/meter_per_second', 'rotaryencoder/delta'], threaded=True)
+        V.parts[-1].get('thread').start()
+
     if type(ctr) is LocalWebController:
         if cfg.DONKEY_GYM:
             print("You can now go to http://localhost:%d to drive your car." % cfg.WEB_CONTROL_PORT)
@@ -670,14 +680,17 @@ def drive(cfg, model_path=None, use_joystick=False, model_type=None, camera_type
 
         if cfg.BUTTON_PRESS_NEW_TUB:
             def new_tub_dir():
-                V.parts.pop()
+                reset_rotaryencoder()
                 tub = th.new_tub_writer(inputs=inputs, types=types, user_meta=meta)
+                for i, part in enumerate(V.parts):
+                    if isinstance(part['part'], type(tub)):
+                        V.parts.pop(i)
                 V.add(tub, inputs=inputs, outputs=["tub/num_records"], run_condition='recording')
                 ctr.set_tub(tub)
 
             ctr.set_button_down_trigger('X', new_tub_dir)
         ctr.print_controls()
- 
+
     def emergency_stop():
         print("E-Stop!!!")
         ctr.mode = 'user'

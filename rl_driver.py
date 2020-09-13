@@ -33,6 +33,7 @@ from donkeycar.parts.throttle_filter import ThrottleFilter
 from donkeycar.parts.file_watcher import FileWatcher
 from donkeycar.parts.launch import AiLaunch
 from donkeycar.parts.controller import get_js_controller
+from donkeycar.parts.encoder import RotaryEncoder
 from donkeycar.utils import *
 from normalizer import LN
 from Keras_DDPG import DDPG
@@ -53,133 +54,65 @@ class RL_Driver():
 
         self.th = TubHandler(path=self.cfg.DATA_PATH)
         self.ctr = get_js_controller(self.cfg)
-        self.emergency_stopped = False
-        self.goal = False
-        self.go_train = False
 
         self._setup_vihecle()
-        if self.training:
-            self._start_parts_thread()
-
-    def stop(self):
-        self.V.stop()
 
     def drive(self):
         #run the vehicle for 20 seconds
-        V.start(rate_hz=cfg.DRIVE_LOOP_HZ,
+        self.V.start(rate_hz=cfg.DRIVE_LOOP_HZ,
                 max_loop_count=cfg.MAX_LOOPS)
 
-    def step(self, actions):
-        # Get outputs and apply it to car. 
-        self.V.mem.put(['pilot/angle', 'pilot/throttle'], actions)
-        self.V.update_parts()
+    def _reset_rotary_encoder(self):
+        index = 0
+        for i, entry in enumerate(self.V.parts):
+            if isinstance(entry['part'], RotaryEncoder):
+                entry['part'].shutdown()
+                self.V.parts.pop(i)
+                index = i
+        re = RotaryEncoder(mm_per_tick=5.469907)
+        self.V.add(re, outputs=['rotaryencoder/meter', 'rotaryencoder/meter_per_second', 'rotaryencoder/delta'], threaded=True, index=index)
 
-        # Then return the next obs, reward, done, info
-        obs = self._get_state()
-        reward = self._get_reward()
-        done = self.emergency_stopped or self.goal
+        self.V.parts[index].get('thread').start()
 
-        return obs, reward, done
-
-    def reset(self):
-        # Set new episode
-        self._set_new_tube()
-        self.emergency_stopped = False
-        self.goal = False
-
-        # Get Observation(img, speed)
-        self.V.update_parts()
-        obs = self._get_state()
-    
-        return obs
-
-    def train(self):
-        # input shape: (b, h, w, c)
-        model = DDPG(num_action=2, input_shape=(120, 160, 3))
-        model.compile()
-        try:
-            while 1:
-                if self.get_trainable():
-                    obs = self.reset()
-                    done = False
-                    while not done:
-                        img = obs['img']
-                        speed = obs['speed']
-
-                        actions = model.run(np.expand_dims(img, axis=0), speed)
-                        next_obs, reward, done = self.step(actions)
-
-                        # Cumulate memeory
-                        model.memory.save([])
-
-                        if model.n % self.BATCH_SIZE == 0:
-                            model.train(self.BATCh_SIZE)
-                        
-                        # TODO: implement last state, current state
-                        if done:
-                            pass
-
-                        obs = next_obs
-                        model.n += 1
-
-                    # Model save
-
-        finally:
-            self.stop()
-
-
-    def get_trainable(self):
-        return self.go_train
-
-    def _start_parts_thread(self):
-        for entry in self.V.parts:
-            if entry.get('thread'):
-                entry.get('thread').start()
-
-    def _set_new_tube(self):
-        #add tub to save data
+    def _set_new_tub(self):
+        # add tub to save data
         inputs=['cam/image_array',
                 'angle', 'throttle',
-                'user/mode', 'stop_condition']
+                'user/mode', 'train_state']
 
         types=['image_array',
                'float', 'float',
                'str', 'int']
 
-        if self.cfg.ENABLE_ROTARY_ENCODER:
-            inputs += ['rotaryencoder/meter', 'rotaryencoder/meter_per_second', 'rotaryencoder/delta']
-            types += ['float', 'float', 'float']
+        # Record rotary encoder
+        inputs += ['rotaryencoder/meter', 'rotaryencoder/meter_per_second', 'rotaryencoder/delta']
+        types += ['float', 'float', 'float']
 
         tub = self.th.new_tub_writer(inputs=inputs, types=types, user_meta=self.meta)
-        if isinstance(self.V.parts[-1]['part'], type(tub)):
-            self.V.parts.pop()
-        self.V.add(tub, inputs=inputs, outputs=["tub/num_records"])
+
+        index = 0
+        for i, part in enumerate(self.V.parts):
+            if isinstance(part['part'], type(tub)):
+                self.V.parts.pop(i)
+                index = i
+        self.V.add(tub, inputs=inputs, outputs=["tub/num_records", "tub/start_time"], run_condition='recording', index=index)
 
         #tell the controller about the tub
         self.ctr.set_tub(tub)
 
-    def _get_state(self):
-        img = self.V.mem.get(['cam/image_array'])[0]
-        speed = self.V.mem.get(['rotaryencoder/meter_per_second'])[0]
-
-        observation = {
-                'img': img,
-                'speed': speed,
-                }
-
-        return observation
-
-    def _get_reward(self):
-        meter = self.V.mem.get(['rotaryencoder/meter'])[0]
-        emergency_stop = -100 if self.emergency_stopped else 0
-        goal = 100 if self.goal else 0
-
-        return meter + emergency_stop + goal
-
     def _setup_controller(self):
+        '''
+        train_state
+        0 - pendding
+        1 - running
+        2 - emergency stop
+        3 - successed
+        4 - train
+        5 - driving
+        '''
         self.V.add(self.ctr, 
           inputs=['cam/image_array'],
-          outputs=['user/angle', 'user/throttle', 'user/mode', 'recording_false'],
+          outputs=['user/angle', 'user/throttle', 'user/mode', 'recording', 'train_state'],
           threaded=True)
 
         def emergency_stop():
@@ -189,7 +122,8 @@ class RL_Driver():
             self.ctr.constant_throttle = False
             self.ctr.estop_state = self.ctr.ES_START
             self.ctr.throttle = 0.0
-            self.emergency_stopped = True
+            self.ctr.train_state = 2
+            self.ctr.recording = False
         self.ctr.set_button_down_trigger('A', emergency_stop)
 
         def success_episode():
@@ -199,14 +133,17 @@ class RL_Driver():
             self.ctr.constant_throttle = False
             self.ctr.estop_state = self.ctr.ES_START
             self.ctr.throttle = 0.0
-            self.goal = True
+            self.ctr.train_state = 3
+            self.ctr.recording = False
         self.ctr.set_button_down_trigger('Y', success_episode)
 
         def start_rl_episode():
             # Start RL Episode
             print("New Episode Start!!!")
+            self._set_new_tub()
+            self._reset_rotary_encoder()
             self.ctr.mode = 'rl_pilot'
-            self.go_train = True
+            self.ctr.train_state = 1
         self.ctr.set_button_down_trigger('B', start_rl_episode)
 
     def _setup_vihecle(self):
@@ -232,22 +169,7 @@ class RL_Driver():
                     return True
 
         self.V.add(PilotCondition(), inputs=['user/mode'], outputs=['run_pilot'])
-
-        class StopChecker:
-            def __init__(self, outer):
-                self.outer = outer
-
-            def run(self):
-                if not self.outer.emergency_stopped and not self.outer.goal:
-                    return 0
-                elif self.outer.emergency_stopped:
-                    self.outer.go_train = False
-                    return 1
-                elif self.outer.goal:
-                    self.outer.go_train = False
-                    return 2
-        self.V.add(StopChecker(self), inputs=[], outputs=['stop_condition'])
-
+        
         def get_record_alert_color(num_records):
             col = (0, 0, 0)
             for count, color in cfg.RECORD_ALERT_COLOR_ARR:
@@ -286,11 +208,9 @@ class RL_Driver():
         rec_tracker_part = RecordTracker()
         self.V.add(rec_tracker_part, inputs=["tub/num_records"], outputs=['records/alert'])
 
-        #Rotary Encoder added
-        if self.cfg.ENABLE_ROTARY_ENCODER:
-            from donkeycar.parts.encoder import RotaryEncoder
-            re = RotaryEncoder(mm_per_tick=5.469907)
-            self.V.add(re, outputs=['rotaryencoder/meter', 'rotaryencoder/meter_per_second', 'rotaryencoder/delta'], threaded=True)
+        # Adding Rotary Encoder
+        re = RotaryEncoder(mm_per_tick=5.469907)
+        self.V.add(re, outputs=['rotaryencoder/meter', 'rotaryencoder/meter_per_second', 'rotaryencoder/delta'], threaded=True)
         
         class ImgPreProcess():
             '''
@@ -333,10 +253,9 @@ class RL_Driver():
                 print(e)
                 print('ERR>> problems loading weights', weights_path)
 
+        # Set the rl network
+        kl = DDPG(num_action=2, input_shape=(120, 160, 3), batch_size=self.BATCH_SIZE)
         if not self.training:
-            # TODO: modify this part
-            kl = RL()
-
             model_reload_cb = None
             if '.h5' in self.model_path or '.uff' in self.model_path or 'tflite' in self.model_path or '.pkl' in self.model_path:
                 #when we have a .h5 extension
@@ -352,24 +271,21 @@ class RL_Driver():
                 print("ERR>> Unknown extension type on model file!!")
                 return
 
-            #this part will signal visual LED, if connected
-            self.V.add(FileWatcher(self.model_path, verbose=True), outputs=['modelfile/modified'])
+        #these parts will reload the model file, but only when ai is running so we don't interrupt user driving
+        # self.V.add(FileWatcher(self.model_path), outputs=['modelfile/dirty'], run_condition="ai_running")
+        # self.V.add(DelayedTrigger(100), inputs=['modelfile/dirty'], outputs=['modelfile/reload'], run_condition="ai_running")
+        # self.V.add(TriggeredCallback(self.model_path, model_reload_cb), inputs=["modelfile/reload"], run_condition="ai_running")
 
-            #these parts will reload the model file, but only when ai is running so we don't interrupt user driving
-            self.V.add(FileWatcher(self.model_path), outputs=['modelfile/dirty'], run_condition="ai_running")
-            self.V.add(DelayedTrigger(100), inputs=['modelfile/dirty'], outputs=['modelfile/reload'], run_condition="ai_running")
-            self.V.add(TriggeredCallback(self.model_path, model_reload_cb), inputs=["modelfile/reload"], run_condition="ai_running")
+        outputs=['pilot/angle', 'pilot/throttle']
 
-            outputs=['pilot/angle', 'pilot/throttle']
-
-            self.V.add(kl, inputs=inputs, # inference input: inf_input
-                outputs=outputs, # pilot angle/throttle
-                run_condition='run_pilot')
+        self.V.add(kl, 
+            inputs=[inf_input, 'rotaryencoder/meter_per_second', 'rotaryencoder/meter', 'train_state', 'tub/start_time'], 
+            outputs=outputs)
         
         #Choose what inputs should change the car.
         class DriveMode:
-            def __init__(self, outer):
-                self.outer = outer
+            def __init__(self, cfg):
+                self.cfg = cfg
 
             def run(self, mode,
                         user_angle, user_throttle,
@@ -381,9 +297,11 @@ class RL_Driver():
                     return pilot_angle if pilot_angle else 0.0, user_throttle
 
                 else:
-                    return pilot_angle if pilot_angle else 0.0, pilot_throttle * self.outer.cfg.AI_THROTTLE_MULT if pilot_throttle else 0.0
+                    throttle = max(0, min(pilot_throttle * self.cfg.AI_THROTTLE_MULT, 1 * self.cfg.AI_THROTTLE_MULT)) if pilot_throttle else 0.0
+                    steering = max(-1, min(pilot_angle, 1)) if pilot_angle else 0.0
+                    return steering, throttle
 
-        self.V.add(DriveMode(self),
+        self.V.add(DriveMode(self.cfg),
               inputs=['user/mode', 'user/angle', 'user/throttle',
                       'pilot/angle', 'pilot/throttle'],
               outputs=['angle', 'throttle'])
@@ -404,13 +322,14 @@ class RL_Driver():
             '''
             return True when ai mode, otherwize respect user mode recording flag
             '''
-            def run(self, mode, recording):
+            def run(self, mode, recording, train_state):
                 if mode == 'user':
-                    return recording
+                    if 1 < train_state < 4:
+                        return True
+                    return False
                 return True
 
-        if self.cfg.RECORD_DURING_AI and not self.training:
-            self.V.add(AiRecordingCondition(), inputs=['user/mode', 'recording'], outputs=['recording'])
+        self.V.add(AiRecordingCondition(), inputs=['user/mode', 'recording', 'train_state'], outputs=['recording'])
 
         #Drive train setup
         steering_controller = PCA9685(self.cfg.STEERING_CHANNEL, self.cfg.PCA9685_I2C_ADDR, busnum=self.cfg.PCA9685_I2C_BUSNUM)
@@ -448,5 +367,5 @@ if __name__ == '__main__':
         transfer = args['--transfer']
 
         rd = RL_Driver(cfg)
-        rd.train()
+        rd.drive()
 

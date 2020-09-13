@@ -1,3 +1,4 @@
+import time
 import tensorflow.compat.v1 as tf
 tf.disable_v2_behavior()
 from tensorflow.python import keras
@@ -36,7 +37,7 @@ class Memory:
 
 
 class DDPG(KerasPilot):
-    def __init__(self, num_action, input_shape=(120, 160, 3),*args,**kwargs):
+    def __init__(self, num_action, input_shape=(120, 160, 3), batch_size=64, training=True, *args, **kwargs):
         super(DDPG, self).__init__(*args, **kwargs)
 
         self.actor_img, self.actor_speed, self.actor = default_model(num_action, input_shape, actor_critic='actor')
@@ -59,12 +60,20 @@ class DDPG(KerasPilot):
         self.sess = tf.Session()
         self.ou = OU()
         self.n = 0
+        self.batch_size = batch_size
+        self.train_step = 0
+        self.last_state = None
+        self.last_actions = None
+
         self.tau = 1e-3
         self.gamma = 0.99
         K.set_session(self.sess)
         # Initialize for later gradient calculations
         self.sess.run(tf.initialize_all_variables())
         self.memory= Memory(500000)
+
+        if training:
+            self.compile()
 
     def load(self, model_paths):
         '''
@@ -125,6 +134,7 @@ class DDPG(KerasPilot):
 
         speeds = np.reshape(speeds, (-1, 1))
         next_speeds = np.reshape(next_speeds, (-1, 1))
+
         predicted_actions = self.actor.predict([imgs, speeds])
 
         grads = self.sess.run(self.critic_grads, feed_dict={
@@ -139,8 +149,8 @@ class DDPG(KerasPilot):
             self.actor_critic_grad: grads,
         })
 
-    def train(self, batch_size):
-        batches = self.memory.sample(batch_size=batch_size)
+    def train(self):
+        batches = self.memory.sample(batch_size=self.batch_size)
         self.train_critic(batches)
         self.train_actor(batches)
 
@@ -157,15 +167,55 @@ class DDPG(KerasPilot):
             c_t_w[i] = self.tau * c_w[i] + (1 - self.tau) * c_t_w[i]
         self.critic_target.set_weights(c_t_w)
 
-    def run(self, img, speed):
-        speed = np.reshape(speed,(1, 1))
-        actions = self.actor.predict([img, speed])
-        noise_t = np.zeros(2)
-        noise_t[0] = max(self.epsilon, 0) * self.ou.function(actions[0][0], 0, 0.6, 0.3) # steering
-        noise_t[1] = max(self.epsilon, 0) * self.ou.function(actions[0][1], 0.4, 1, 0.15) # throttle
-        a_t = [(actions[0][0] + noise_t[0]), (actions[0][1] + noise_t[1])]
-        self.epsilon -= 1.0 / self.epsilon_decay
-        return a_t[0], a_t[1]
+    def run(self, img, speed, meter, train_state, start_time):
+        if train_state > 0:
+            img = np.expand_dims(img, axis=0)
+            reshaped_speed = np.reshape(speed,(1, 1))
+            actions = self.actor.predict([img, reshaped_speed])
+            noise_t = np.zeros(2)
+            noise_t[0] = max(self.epsilon, 0) * self.ou.function(actions[0][0], 0.4, 1, 0.15) # steering
+            noise_t[1] = max(self.epsilon, 0) * self.ou.function(actions[0][1], 0, 0.6, 0.3) # throttle
+            a_t = [(actions[0][0] + noise_t[0]), (actions[0][1] + noise_t[1])] # steering, throttle
+            self.epsilon -= 1.0 / self.epsilon_decay
+
+            if train_state < 4:
+                if self.train_step > 0:
+                    self.n += 1
+
+                    elapsed_time = time.time() - start_time
+                    reward = meter - elapsed_time
+                    if train_state == 2:
+                        reward -= 100
+                    elif train_state == 3:
+                        reward += 100
+                    done = train_state > 1
+
+                    self.memory.save(self.last_state['img'], self.last_state['speed'], self.last_actions, reward, img, speed, done)
+
+                    if done:
+                        print("=======EPISODE DONE======")
+                        self.train_step = 0
+                        self.last_state = None
+                        self.last_actions = None
+
+                        return 0, 0
+
+                self.last_state = {
+                        'img': img,
+                        'speed': speed,
+                        }
+                self.last_actions = a_t
+                self.train_step += 1
+
+            elif train_state == 4:
+                if self.n > self.batch_size:
+                    print("TRAIN START!")
+                    self.train()
+                    print("TRAIN DONE!")
+                return 0, 0
+
+            return a_t[0], a_t[1]
+        return 0, 0
 
 
 def default_model(num_action, input_shape, actor_critic='actor'):
@@ -197,8 +247,7 @@ def default_model(num_action, input_shape, actor_critic='actor'):
         o = Dropout(0.5)(o)
         o = Activation('relu')(o)
         o = Dense(num_action)(o)
-        o = Dropout(0.5)(o)
-        o = Activation('tanh')(o)
+        o = Activation('linear')(o)
 
         model = Model(inputs=[img_in, s_in],
                       outputs=o)
