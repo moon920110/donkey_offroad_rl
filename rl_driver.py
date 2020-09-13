@@ -39,7 +39,7 @@ from Keras_DDPG import DDPG
 
 
 class RL_Driver():
-    def __init__(self, cfg, model_path=None, model_type='DDPG', meta=[], training=True):
+    def __init__(self, cfg, model_path=None, model_type='DDPG', meta=[], training=True, batch_size=64):
         # init car
         self.V = dk.vehicle.Vehicle()
 
@@ -48,6 +48,8 @@ class RL_Driver():
         self.model_type = model_type
         self.meta = meta
         self.training = training
+
+        self.BATCH_SIZE = batch_size
 
         self.th = TubHandler(path=self.cfg.DATA_PATH)
         self.ctr = get_js_controller(self.cfg)
@@ -105,12 +107,22 @@ class RL_Driver():
                         speed = obs['speed']
 
                         actions = model.run(np.expand_dims(img, axis=0), speed)
-                        obs, reward, done = self.step(actions)
+                        next_obs, reward, done = self.step(actions)
 
+                        # Cumulate memeory
+                        model.memory.save([])
+
+                        if model.n % self.BATCH_SIZE == 0:
+                            model.train(self.BATCh_SIZE)
+                        
                         # TODO: implement last state, current state
-                        # TODO: memorize step, if len(mem) > train -> train()
                         if done:
                             pass
+
+                        obs = next_obs
+                        model.n += 1
+
+                    # Model save
 
         finally:
             self.stop()

@@ -34,9 +34,11 @@ class Memory:
     def sample(self, batch_size):
         return random.sample(self.memory, batch_size)
 
+
 class DDPG(KerasPilot):
     def __init__(self, num_action, input_shape=(120, 160, 3),*args,**kwargs):
         super(DDPG, self).__init__(*args, **kwargs)
+
         self.actor_img, self.actor_speed, self.actor = default_model(num_action, input_shape, actor_critic='actor')
         _, _, self.actor_target = default_model(num_action, input_shape, actor_critic='actor')
         self.critic_img, self.critic_speed, self.critic_action, self.critic = default_model(num_action,input_shape,actor_critic='critic')
@@ -93,6 +95,7 @@ class DDPG(KerasPilot):
 
     def train_critic(self, batches):
         batches = np.array(batches).transpose()
+
         imgs = np.vstack(batches[0])
         speeds = np.vstack(batches[1])
         actions = np.vstack(batches[2])
@@ -100,12 +103,15 @@ class DDPG(KerasPilot):
         next_imgs = np.vstack(batches[4])
         next_speeds = np.vstack(batches[5])
         dones = np.vstack(batches[6].astype(int))
+
         speeds = np.reshape(speeds, (-1, 1))
         next_speeds = np.reshape(next_speeds, (-1, 1))
-        target_actions = self.actor_target.predict([next_imgs,next_speeds])
-        target_q = self.critic_target.predict([next_imgs,next_speeds,target_actions])
+
+        target_actions = self.actor_target.predict([next_imgs, next_speeds])
+        target_q = self.critic_target.predict([next_imgs, next_speeds, target_actions])
         rewards += self.gamma * target_q *(1-dones)
-        evaluation = self.critic.fit([imgs, speeds,actions], rewards, verbose=0)
+
+        evaluation = self.critic.fit([imgs, speeds, actions], rewards, verbose=0)
 
     def train_actor(self, batches):
         batches = np.array(batches).transpose()
@@ -116,19 +122,21 @@ class DDPG(KerasPilot):
         next_imgs = np.vstack(batches[4])
         next_speeds = np.vstack(batches[5])
         dones = np.vstack(batches[6].astype(int))
+
         speeds = np.reshape(speeds, (-1, 1))
         next_speeds = np.reshape(next_speeds, (-1, 1))
         predicted_actions = self.actor.predict([imgs, speeds])
+
         grads = self.sess.run(self.critic_grads, feed_dict={
             self.critic_img: imgs,
             self.critic_speed: speeds,
-            self.critic_action: predicted_actions
+            self.critic_action: predicted_actions,
         })[0]
 
         self.sess.run(self.optimize, feed_dict={
             self.actor_img: imgs,
             self.actor_speed: speeds,
-            self.actor_critic_grad: grads
+            self.actor_critic_grad: grads,
         })
 
     def train(self, batch_size):
