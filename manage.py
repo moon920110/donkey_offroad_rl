@@ -320,7 +320,7 @@ def drive(cfg, model_path=None, use_joystick=False, model_type=None, camera_type
 
     #Rotary Encoder added
     if cfg.ENABLE_ROTARY_ENCODER:
-        re = RotaryEncoder(mm_per_tick=5.469907)
+        re = RotaryEncoder(mm_per_tick=cfg.ROTARY_MM_PER_TICK)
         V.add(re, outputs=['rotaryencoder/meter', 'rotaryencoder/meter_per_second', 'rotaryencoder/delta'], threaded=True)
 
     #IMU
@@ -664,7 +664,7 @@ def drive(cfg, model_path=None, use_joystick=False, model_type=None, camera_type
             if isinstance(part['part'], RotaryEncoder):
                 part['part'].shutdown()
                 V.parts.pop(i)
-        re = RotaryEncoder(mm_per_tick=5.469907)
+        re = RotaryEncoder(mm_per_tick=cfg.ROTARY_MM_PER_TICK)
         V.add(re, outputs=['rotaryencoder/meter', 'rotaryencoder/meter_per_second', 'rotaryencoder/delta'], threaded=True)
         V.parts[-1].get('thread').start()
 

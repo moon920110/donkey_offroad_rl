@@ -54,6 +54,7 @@ class RL_Driver():
 
         self.th = TubHandler(path=self.cfg.DATA_PATH)
         self.ctr = get_js_controller(self.cfg)
+        self.eps = 0
 
         self._setup_vihecle()
 
@@ -69,7 +70,8 @@ class RL_Driver():
                 entry['part'].shutdown()
                 self.V.parts.pop(i)
                 index = i
-        re = RotaryEncoder(mm_per_tick=5.469907)
+        # re = RotaryEncoder(mm_per_tick=5.469907)
+        re = RotaryEncoder(mm_per_tick=self.cfg.ROTARY_MM_PER_TICK)
         self.V.add(re, outputs=['rotaryencoder/meter', 'rotaryencoder/meter_per_second', 'rotaryencoder/delta'], threaded=True, index=index)
 
         self.V.parts[index].get('thread').start()
@@ -95,7 +97,7 @@ class RL_Driver():
             if isinstance(part['part'], type(tub)):
                 self.V.parts.pop(i)
                 index = i
-        self.V.add(tub, inputs=inputs, outputs=["tub/num_records", "tub/start_time"], run_condition='recording', index=index)
+        self.V.add(tub, inputs=inputs, outputs=["tub/num_records"], run_condition='recording', index=index)
 
         #tell the controller about the tub
         self.ctr.set_tub(tub)
@@ -117,33 +119,43 @@ class RL_Driver():
 
         def emergency_stop():
             # Modified emergency stop
-            print('E-Stop!!!')
-            self.ctr.mode = 'user'
-            self.ctr.constant_throttle = False
-            self.ctr.estop_state = self.ctr.ES_START
-            self.ctr.throttle = 0.0
-            self.ctr.train_state = 2
-            self.ctr.recording = False
+            if self.ctr.train_state == 1:
+                print('E-Stop!!!')
+                self.ctr.mode = 'user'
+                self.ctr.constant_throttle = False
+                self.ctr.estop_state = self.ctr.ES_START
+                self.ctr.throttle = 0.0
+                self.ctr.train_state = 2
+                self.ctr.recording = False
+            else:
+                print("Can't activate this button")
         self.ctr.set_button_down_trigger('A', emergency_stop)
 
         def success_episode():
             # When the donkey reach the goal
-            print('Episode SUCESSED!!!!!')
-            self.ctr.mode = 'user'
-            self.ctr.constant_throttle = False
-            self.ctr.estop_state = self.ctr.ES_START
-            self.ctr.throttle = 0.0
-            self.ctr.train_state = 3
-            self.ctr.recording = False
+            if self.ctr.train_state == 1: 
+                print('Episode SUCESSED!!!!!')
+                self.ctr.mode = 'user'
+                self.ctr.constant_throttle = False
+                self.ctr.estop_state = self.ctr.ES_START
+                self.ctr.throttle = 0.0
+                self.ctr.train_state = 3
+                self.ctr.recording = False
+            else:
+                print("Can't activate this button")
         self.ctr.set_button_down_trigger('Y', success_episode)
 
         def start_rl_episode():
             # Start RL Episode
-            print("New Episode Start!!!")
-            self._set_new_tub()
-            self._reset_rotary_encoder()
-            self.ctr.mode = 'rl_pilot'
-            self.ctr.train_state = 1
+            if self.ctr.train_state == 0:
+                print("New Episode (eps_{}) Start!!!".format(self.eps))
+                self.eps += 1
+                self._set_new_tub()
+                self._reset_rotary_encoder()
+                self.ctr.mode = 'rl_pilot'
+                self.ctr.train_state = 1
+            else:
+                print("Can't activate this button")
         self.ctr.set_button_down_trigger('B', start_rl_episode)
 
     def _setup_vihecle(self):
@@ -209,7 +221,8 @@ class RL_Driver():
         self.V.add(rec_tracker_part, inputs=["tub/num_records"], outputs=['records/alert'])
 
         # Adding Rotary Encoder
-        re = RotaryEncoder(mm_per_tick=5.469907)
+        # re = RotaryEncoder(mm_per_tick=5.469907)
+        re = RotaryEncoder(mm_per_tick=self.cfg.ROTARY_MM_PER_TICK)
         self.V.add(re, outputs=['rotaryencoder/meter', 'rotaryencoder/meter_per_second', 'rotaryencoder/delta'], threaded=True)
         
         class ImgPreProcess():
@@ -254,7 +267,7 @@ class RL_Driver():
                 print('ERR>> problems loading weights', weights_path)
 
         # Set the rl network
-        kl = DDPG(num_action=2, input_shape=(120, 160, 3), batch_size=self.BATCH_SIZE)
+        kl = DDPG(num_action=2, input_shape=(120, 160, 3), batch_size=self.BATCH_SIZE, model_path = self.model_path)
         if not self.training:
             model_reload_cb = None
             if '.h5' in self.model_path or '.uff' in self.model_path or 'tflite' in self.model_path or '.pkl' in self.model_path:
@@ -279,7 +292,7 @@ class RL_Driver():
         outputs=['pilot/angle', 'pilot/throttle']
 
         self.V.add(kl, 
-            inputs=[inf_input, 'rotaryencoder/meter_per_second', 'rotaryencoder/meter', 'train_state', 'tub/start_time'], 
+            inputs=[inf_input, 'rotaryencoder/meter_per_second', 'rotaryencoder/meter', 'train_state', 
             outputs=outputs)
         
         #Choose what inputs should change the car.
@@ -353,7 +366,6 @@ if __name__ == '__main__':
     args = docopt(__doc__)
     cfg = dk.load_config(myconfig=args['--myconfig'])
 
-    # TODO: Not implemented yet
     if args['drive']:
         model_type = args['--type']
 
@@ -366,6 +378,6 @@ if __name__ == '__main__':
         model_type = args['--type']
         transfer = args['--transfer']
 
-        rd = RL_Driver(cfg)
+        rd = RL_Driver(cfg, model_path=model)
         rd.drive()
 
