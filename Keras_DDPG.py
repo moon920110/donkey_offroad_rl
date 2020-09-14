@@ -1,4 +1,3 @@
-import time
 import tensorflow.compat.v1 as tf
 tf.disable_v2_behavior()
 from tensorflow.python import keras
@@ -13,7 +12,6 @@ from tensorflow.python.keras.layers.wrappers import TimeDistributed as TD
 from tensorflow.python.keras.layers import Conv3D, MaxPooling3D, Cropping3D, Conv2DTranspose
 import numpy as np
 from tensorflow.python.keras.optimizers import Adam
-#from keras import KerasPilot
 from collections import deque
 import random
 from donkeycar.parts.keras import KerasPilot
@@ -37,7 +35,7 @@ class Memory:
 
 
 class DDPG(KerasPilot):
-    def __init__(self, num_action, input_shape=(120, 160, 3), batch_size=64, training=True, *args, **kwargs):
+    def __init__(self, num_action, input_shape=(120, 160, 3), batch_size=64, training=True, model_path=None, *args, **kwargs):
         super(DDPG, self).__init__(*args, **kwargs)
 
         self.actor_img, self.actor_speed, self.actor = default_model(num_action, input_shape, actor_critic='actor')
@@ -60,6 +58,7 @@ class DDPG(KerasPilot):
         self.sess = tf.Session()
         self.ou = OU()
         self.n = 0
+        self.model_path = model_path
         self.batch_size = batch_size
         self.train_step = 0
         self.last_state = None
@@ -74,6 +73,12 @@ class DDPG(KerasPilot):
 
         if training:
             self.compile()
+
+    def save(self):
+        self.actor.save('{}_actor.h5'.format(self.model_path))
+        self.critic.save('{}_critic.h5'.format(self.model_path))
+        self.actor_target.save('{}_actor_target.h5'.format(self.model_path))
+        self.critic_target.save('{}_critic_target.h5'.format(self.model_path))
 
     def load(self, model_paths):
         '''
@@ -167,14 +172,14 @@ class DDPG(KerasPilot):
             c_t_w[i] = self.tau * c_w[i] + (1 - self.tau) * c_t_w[i]
         self.critic_target.set_weights(c_t_w)
 
-    def run(self, img, speed, meter, train_state, start_time):
+    def run(self, img, speed, meter, train_state):
         if train_state > 0:
             img = np.expand_dims(img, axis=0)
             reshaped_speed = np.reshape(speed,(1, 1))
             actions = self.actor.predict([img, reshaped_speed])
             noise_t = np.zeros(2)
-            noise_t[0] = max(self.epsilon, 0) * self.ou.function(actions[0][0], 0.4, 1, 0.15) # steering
-            noise_t[1] = max(self.epsilon, 0) * self.ou.function(actions[0][1], 0, 0.6, 0.3) # throttle
+            noise_t[0] = max(self.epsilon, 0) * self.ou.function(actions[0][0], 0, 0.6, 0.3) # steering
+            noise_t[1] = max(self.epsilon, 0) * self.ou.function(actions[0][1], 0.5, 1, 0.15) # throttle
             a_t = [(actions[0][0] + noise_t[0]), (actions[0][1] + noise_t[1])] # steering, throttle
             self.epsilon -= 1.0 / self.epsilon_decay
 
@@ -182,8 +187,7 @@ class DDPG(KerasPilot):
                 if self.train_step > 0:
                     self.n += 1
 
-                    elapsed_time = time.time() - start_time
-                    reward = meter - elapsed_time
+                    reward = meter - self.train_step * 0.01
                     if train_state == 2:
                         reward -= 100
                     elif train_state == 3:
@@ -194,6 +198,7 @@ class DDPG(KerasPilot):
 
                     if done:
                         print("=======EPISODE DONE======")
+                        print('reward: {}'.format(reward))
                         self.train_step = 0
                         self.last_state = None
                         self.last_actions = None
@@ -212,6 +217,8 @@ class DDPG(KerasPilot):
                     print("TRAIN START!")
                     self.train()
                     print("TRAIN DONE!")
+                    self.save()
+                    print("SAVE DONE!")
                 return 0, 0
 
             return a_t[0], a_t[1]
@@ -226,24 +233,32 @@ def default_model(num_action, input_shape, actor_critic='actor'):
     if actor_critic == "actor":
         # Perception
         x = Convolution2D(filters=24, kernel_size=(5, 5), strides=(2, 2), activation='relu')(img_in)
+        x = BatchNormalization()(x)
         x = Convolution2D(filters=32, kernel_size=(5, 5), strides=(2, 2), activation='relu')(x)
+        x = BatchNormalization()(x)
         x = Convolution2D(filters=64, kernel_size=(5, 5), strides=(2, 2), activation='relu')(x)
+        x = BatchNormalization()(x)
         x = Convolution2D(filters=64, kernel_size=(3, 3), strides=(2, 2), activation='relu')(x)
+        x = BatchNormalization()(x)
         x = Convolution2D(filters=64, kernel_size=(3, 3), strides=(1, 1), activation='relu')(x)
+        x = BatchNormalization()(x)
         x = Flatten(name='flattened')(x)
         s_in = Input(shape=(1,), name='speed')
 
         # speed layer
         s = Dense(64)(s_in)
+        s = BatchNormalization()(s)
         s = Dropout(0.5)(s)
         s = Activation('relu')(s)
         s = Dense(64)(s)
+        s = BatchNormalization()(s)
         s = Dropout(0.5)(s)
         s = Activation('relu')(s)
 
         #action layer
         o = Concatenate(axis=1)([x, s])
         o = Dense(64)(o)
+        o = BatchNormalization()(o)
         o = Dropout(0.5)(o)
         o = Activation('relu')(o)
         o = Dense(num_action)(o)
@@ -259,35 +274,44 @@ def default_model(num_action, input_shape, actor_critic='actor'):
     if actor_critic == 'critic':
         # Perception
         x = Convolution2D(filters=24, kernel_size=(5, 5), strides=(2, 2), activation='relu')(img_in)
+        x = BatchNormalization()(x)
         x = Convolution2D(filters=32, kernel_size=(5, 5), strides=(2, 2), activation='relu')(x)
+        x = BatchNormalization()(x)
         x = Convolution2D(filters=64, kernel_size=(5, 5), strides=(2, 2), activation='relu')(x)
+        x = BatchNormalization()(x)
         x = Convolution2D(filters=64, kernel_size=(3, 3), strides=(2, 2), activation='relu')(x)
+        x = BatchNormalization()(x)
         x = Convolution2D(filters=64, kernel_size=(3, 3), strides=(1, 1), activation='relu')(x)
+        x = BatchNormalization()(x)
         x = Flatten(name='flattened')(x)
         s_in = Input(shape=(1,), name='speed')
         a_in = Input(shape=(2,), name='actions')
 
         # speed layer
         s = Dense(64)(s_in)
+        s = BatchNormalization()(s)
         s = Dropout(0.5)(s)
         s = Activation('relu')(s)
         s = Dense(64)(s)
+        s = BatchNormalization()(s)
         s = Dropout(0.5)(s)
         s = Activation('relu')(s)
 
         # actions_layer
         a = Dense(64)(a_in)
+        a = BatchNormalization()(a)
         a = Dropout(0.5)(a)
         a = Activation('relu')(a)
         a = Dense(32)(a)
+        a = BatchNormalization()(a)
         a = Dropout(0.5)(a)
         a = Activation('relu')(a)
         o = Concatenate(axis=1)([x, s, a])
         o = Dense(64)(o)
+        a = BatchNormalization()(a)
         o = Dropout(0.5)(o)
         o = Activation('relu')(o)
         o = Dense(1)(o)
-        o = Dropout(0.5)(o)
         q = Activation('relu')(o)
         model = Model(inputs=[img_in, s_in, a_in], outputs=q)
 
