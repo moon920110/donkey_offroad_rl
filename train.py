@@ -169,6 +169,7 @@ def collate_records(records, gen_records, opts):
     # Finally add all the new records to the existing list
     gen_records.update(new_records)
 
+
 def save_json_and_weights(model, filename):
     '''
     given a keras model and a .h5 filename, save the model file
