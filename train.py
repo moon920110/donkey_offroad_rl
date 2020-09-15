@@ -38,7 +38,7 @@ import donkeycar as dk
 from donkeycar.parts.datastore import Tub
 from donkeycar.parts.keras import KerasLinear, KerasIMU,\
      KerasCategorical, KerasBehavioral, Keras3D_CNN,\
-     KerasRNN_LSTM, KerasLatent, KerasLocalizer
+     KerasRNN_LSTM, KerasLatent, KerasLocalizer, KerasIL
 from donkeycar.parts.augment import augment_image
 from donkeycar.utils import *
 from normalizer import LN
@@ -118,6 +118,12 @@ def collate_records(records, gen_records, opts):
 
         sample['angle'] = angle
         sample['throttle'] = throttle
+
+        try:
+            speed = float(json_data['rotaryencoder/meter_per_second'])
+            sample['rotaryencoder/meter_per_second'] = speed
+        except:
+            pass
 
         try:
             accl_x = float(json_data['imu/acl_x'])
@@ -403,6 +409,7 @@ def train(cfg, tub_names, model_name, transfer_model, model_type, continuous, au
             has_bvh = type(kl) is KerasBehavioral
             img_out = type(kl) is KerasLatent
             loc_out = type(kl) is KerasLocalizer
+            il_in = type(kl) is KerasIL
             
             for key in keys:
 
@@ -427,6 +434,7 @@ def train(cfg, tub_names, model_name, transfer_model, model_type, continuous, au
                     inputs_img = []
                     inputs_imu = []
                     inputs_bvh = []
+                    inputs_speed = []
                     angles = []
                     throttles = []
                     out_img = []
@@ -454,7 +462,10 @@ def train(cfg, tub_names, model_name, transfer_model, model_type, continuous, au
 
                         else:
                             img_arr = record['img_data']
-
+                        
+                        if il_in:
+                            inputs_speed.append(record['rotaryencoder/meter_per_second'])
+                        
                         if img_out:                            
                             rz_img_arr = cv2.resize(img_arr, (127, 127)) / 255.0
                             out_img.append(rz_img_arr[:,:,0].reshape((127, 127, 1)))
@@ -483,6 +494,8 @@ def train(cfg, tub_names, model_name, transfer_model, model_type, continuous, au
                         X = [img_arr, np.array(inputs_imu)]
                     elif has_bvh:
                         X = [img_arr, np.array(inputs_bvh)]
+                    elif il_in:
+                        X = [img_arr, np.array(inputs_speed)]
                     else:
                         X = [img_arr]
 
