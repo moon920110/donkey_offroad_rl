@@ -72,6 +72,9 @@ class DDPG(KerasPilot):
         self.sess.run(tf.initialize_all_variables())
         self.memory= Memory(500000)
 
+        self.actor.summary()
+        self.critic.summary()
+
         if training:
             self.compile()
 
@@ -309,13 +312,13 @@ def default_model(num_action, input_shape, actor_critic='actor'):
         a = BatchNormalization()(a)
         a = Dropout(0.5)(a)
         a = Activation('relu')(a)
+
         o = Concatenate(axis=1)([x, s, a])
         o = Dense(64)(o)
-        a = BatchNormalization()(a)
+        o = BatchNormalization()(o)
         o = Dropout(0.5)(o)
         o = Activation('relu')(o)
-        o = Dense(1)(o)
-        q = Activation('relu')(o)
+        q = Dense(1)(o)
         model = Model(inputs=[img_in, s_in, a_in], outputs=q)
 
         return img_in, s_in, a_in, model
