@@ -179,12 +179,15 @@ class PPO(KerasPilot):
         self.dummy_advantage = np.zeros((1, 1))
         self.dummy_old_prediciton = np.zeros((1, 2*num_action))
 
+        self.actor.summary()
+        self.critic.summary()
+
         if training:
             self.compile()
 
     def save(self):
-        self.actor.save('{}_actor.h5'.format(self.model_path))
         self.critic.save('{}_critic.h5'.format(self.model_path))
+        self.actor.save('{}_actor.h5'.format(self.model_path))
 
     def load(self, model_paths):
         '''
@@ -290,9 +293,9 @@ class PPO(KerasPilot):
                 print("TRAIN START!")
                 self.train()
                 print("TRAIN DONE!")
-                # TODO: check save error / clear했을 때, memory 다 클리어 되는 지 확인
-                # self.save()
-                # print("SAVE DONE!")
+                # TODO: there is a save error
+               # self.save()
+               # print("SAVE DONE!")
                 self.memory.clear()
                 print("MEMORY CLEAR!")
                 return 0, 0, False
@@ -323,7 +326,7 @@ def default_model(num_action, input_shape, actor_critic='actor'):
         x = Convolution2D(filters=64, kernel_size=(3, 3), strides=(1, 1), activation='relu')(x)
         x = Flatten(name='flattened')(x)
         s_in = Input(shape=(1,), name='speed')
-        adv_in = Input(shape=(1,))
+        adv_in = Input(shape=(1,), name='adv')
         old_prediction = Input(shape=(2*num_action,), name='old_prediction_input')
 
         # speed layer
