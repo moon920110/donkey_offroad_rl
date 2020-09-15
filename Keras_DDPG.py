@@ -231,6 +231,7 @@ def default_model(num_action, input_shape, actor_critic='actor'):
     LR = 1e-4  # Lower lr stabilises training greatly
     img_in = Input(shape=input_shape, name='img_in')
     if actor_critic == "actor":
+
         # Perception
         x = Convolution2D(filters=24, kernel_size=(5, 5), strides=(2, 2), activation='relu')(img_in)
         x = BatchNormalization()(x)
