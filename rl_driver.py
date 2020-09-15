@@ -318,7 +318,6 @@ class RL_Driver():
                 else:
                     throttle = max(0, min(pilot_throttle * self.cfg.AI_THROTTLE_MULT, 1 * self.cfg.AI_THROTTLE_MULT)) if pilot_throttle else 0.0
                     steering = max(-1, min(pilot_angle, 1)) if pilot_angle else 0.0
-                    print(steering, throttle)
                     return steering, throttle
 
         self.V.add(DriveMode(self.cfg),
@@ -345,9 +344,9 @@ class RL_Driver():
             def run(self, mode, recording, train_state):
                 if mode == 'user':
                     if 1 < train_state < 4:
-                        return False
+                        return True
                     return False
-                return False
+                return True
 
         self.V.add(AiRecordingCondition(), inputs=['user/mode', 'recording', 'train_state'], outputs=['recording'])
 
