@@ -18,10 +18,6 @@ import random
 from donkeycar.parts.keras import KerasPilot
 
 
-class OU(object):
-    def function(self, x, mu, theta, sigma):
-        return theta * (mu - x) + sigma * np.random.randn(1)
-
 
 class Memory:
     def __init__(self, capacity):
@@ -49,19 +45,10 @@ class TD3(KerasPilot):
         _, _, self.critic_target1 = default_model(num_action, input_shape, actor_critic='critic')
         _, _, self.critic_target2 = default_model(num_action, input_shape, actor_critic='critic')
 
-        self.actor_critic_grad = tf.placeholder(tf.float32, [None, 2])  # where we will feed de/dC (from critic)
-        actor_model_weights = self.actor.trainable_weights
-        self.actor_grads = tf.gradients(self.actor.output,
-                                        actor_model_weights, -self.actor_critic_grad)  # dC/dA (from actor)
-        grads = zip(self.actor_grads, actor_model_weights)
-
         self.lr = 0.002
-        self.critic_optimizer = tf.keras.optimizers.Adam(lr=0.002)
-        self.actor_optimizer = tf.keras.optimizers.Adam(lr=0.002)
-        self.epsilon = 1
-        self.epsilon_decay = -5000
-        self.sess = tf.Session()
-        self.ou = OU()
+        self.critic_optimizer = tf.keras.optimizers.Adam(lr=self.lr)
+        self.actor_optimizer = tf.keras.optimizers.Adam(lr=self.lr)
+
         self.n = 0
         self.model_path = model_path
         self.batch_size = batch_size
@@ -76,9 +63,7 @@ class TD3(KerasPilot):
         self.noise_clip = 0.5
         self.policy_freq = 2
         self.total_it = 0
-        K.set_session(self.sess)
         # Initialize for later gradient calculations
-        self.sess.run(tf.initialize_all_variables())
         self.memory = Memory(500000)
 
         self.actor.summary()
@@ -89,9 +74,11 @@ class TD3(KerasPilot):
 
     def save(self):
         self.actor.save('{}_actor.h5'.format(self.model_path))
-        self.critic.save('{}_critic.h5'.format(self.model_path))
+        self.critic1.save('{}_critic.h5'.format(self.model_path))
+        self.critic2.save('{}_critic.h5'.format(self.model_path))
         self.actor_target.save('{}_actor_target.h5'.format(self.model_path))
-        self.critic_target.save('{}_critic_target.h5'.format(self.model_path))
+        self.critic_target1.save('{}_critic_target1.h5'.format(self.model_path))
+        self.critic_target2.save('{}_critic_target2.h5'.format(self.model_path))
 
     def load(self, model_paths):
         '''
@@ -104,20 +91,24 @@ class TD3(KerasPilot):
         '''
         self.actor = keras.models.load_model(model_paths[0], compile=False)
         self.actor_target = keras.models.load_model(model_paths[1], compile=False)
-        self.critic = keras.models.load_model(model_paths[2], compile=False)
-        self.critic_target = keras.models.load_model(model_paths[3], compile=False)
+        self.critic1 = keras.models.load_model(model_paths[2], compile=False)
+        self.critic_target1 = keras.models.load_model(model_paths[3], compile=False)
+        self.critic2 = keras.models.load_model(model_paths[4], compile=False)
+        self.critic_target2 = keras.models.load_model(model_paths[5], compile=False)
 
     def load_weights(self, model_paths, by_name=True):
         self.actor = keras.models.load_weights(model_paths[0], by_name=by_name)
         self.actor_target = keras.models.load_weights(model_paths[1], by_name=by_name)
-        self.critic = keras.models.load_weights(model_paths[2], by_name=by_name)
-        self.critic_target = keras.models.load_weights(model_paths[3], by_name=by_name)
+        self.critic1 = keras.models.load_weights(model_paths[2], by_name=by_name)
+        self.critic_target1 = keras.models.load_weights(model_paths[3], by_name=by_name)
+        self.critic2 = keras.models.load_weights(model_paths[4], by_name=by_name)
+        self.critic_target2 = keras.models.load_weights(model_paths[5], by_name=by_name)
 
     def shutdown(self):
         pass
 
     def compile(self):
-        self.critic.compile(optimizer=Adam(lr=self.lr), loss='mse')
+        self.critic1.compile(optimizer=Adam(lr=self.lr), loss='mse')
         self.actor.compile(loss="mse", optimizer=Adam(lr=self.lr))
 
     def train_critic(self, batches):
@@ -135,8 +126,8 @@ class TD3(KerasPilot):
         next_speeds = np.reshape(next_speeds, (-1, 1))
 
         noise = np.clip(np.random.randn(2) * self.policy_noise, -self.noise_clip, self.noise_clip)
-        target_actions = self.actor_target(next_imgs,next_speeds)
-        target_actions = K.clip(target_actions,[-0.8,0],[0.8,1]) # prob bug in here
+        target_actions = self.actor_target(next_imgs,next_speeds) + noise
+        target_actions = K.clip(target_actions,[-0.8,0],[0.8,1])
 
         target_q1 = self.critic_target1.predict([next_imgs, next_speeds, target_actions])
         target_q2 = self.critic_target2.predict([next_imgs, next_speeds, target_actions])
@@ -186,12 +177,17 @@ class TD3(KerasPilot):
             a_t_w[i] = self.tau * a_w[i] + (1 - self.tau) * a_t_w[i]
         self.actor_target.set_weights(a_t_w)
 
-        # critic transfer weights
-        c_w, c_t_w = self.critic.get_weights(), self.critic_target.get_weights()
+        # critic1 transfer weights
+        c_w, c_t_w = self.critic1.get_weights(), self.critic_target1.get_weights()
         for i in range(len(c_w)):
             c_t_w[i] = self.tau * c_w[i] + (1 - self.tau) * c_t_w[i]
-        self.critic_target.set_weights(c_t_w)
+        self.critic_target1.set_weights(c_t_w)
 
+        # critic2 transfer weights
+        c_w, c_t_w = self.critic2.get_weights(), self.critic_target2.get_weights()
+        for i in range(len(c_w)):
+            c_t_w[i] = self.tau * c_w[i] + (1 - self.tau) * c_t_w[i]
+        self.critic_target2.set_weights(c_t_w)
     def run(self, img, speed, meter, train_state):
         if train_state > 0:
             img = np.expand_dims(img, axis=0)
