@@ -37,6 +37,7 @@ from donkeycar.parts.encoder import RotaryEncoder
 from donkeycar.utils import *
 from normalizer import LN
 from Keras_DDPG import DDPG
+from Keras_PPO import PPO
 
 
 class RL_Driver():
@@ -49,6 +50,11 @@ class RL_Driver():
         self.model_type = model_type
         self.meta = meta
         self.training = training
+        self.model_dict = {
+                'DDPG': DDPG,
+                'PPO': PPO,
+#                'SAC': SAC,
+                }
 
         self.BATCH_SIZE = batch_size
 
@@ -113,7 +119,7 @@ class RL_Driver():
         5 - driving
         '''
         self.V.add(self.ctr, 
-          inputs=['cam/image_array'],
+          inputs=['cam/image_array', 'kl/train_trigger'],
           outputs=['user/angle', 'user/throttle', 'user/mode', 'recording', 'train_state'],
           threaded=True)
 
@@ -267,7 +273,7 @@ class RL_Driver():
                 print('ERR>> problems loading weights', weights_path)
 
         # Set the rl network
-        kl = DDPG(num_action=2, input_shape=(120, 160, 3), batch_size=self.BATCH_SIZE, model_path = self.model_path)
+        kl = self.model_dict[self.model_type](num_action=2, input_shape=(120, 160, 3), batch_size=self.BATCH_SIZE, model_path = self.model_path)
         if not self.training:
             model_reload_cb = None
             if '.h5' in self.model_path or '.uff' in self.model_path or 'tflite' in self.model_path or '.pkl' in self.model_path:
@@ -289,10 +295,10 @@ class RL_Driver():
         # self.V.add(DelayedTrigger(100), inputs=['modelfile/dirty'], outputs=['modelfile/reload'], run_condition="ai_running")
         # self.V.add(TriggeredCallback(self.model_path, model_reload_cb), inputs=["modelfile/reload"], run_condition="ai_running")
 
-        outputs=['pilot/angle', 'pilot/throttle']
+        outputs=['pilot/angle', 'pilot/throttle', 'kl/train_trigger']
 
         self.V.add(kl, 
-            inputs=[inf_input, 'rotaryencoder/meter_per_second', 'rotaryencoder/meter', 'train_state', 
+            inputs=[inf_input, 'rotaryencoder/meter_per_second', 'rotaryencoder/meter', 'train_state'], 
             outputs=outputs)
         
         #Choose what inputs should change the car.
@@ -312,6 +318,7 @@ class RL_Driver():
                 else:
                     throttle = max(0, min(pilot_throttle * self.cfg.AI_THROTTLE_MULT, 1 * self.cfg.AI_THROTTLE_MULT)) if pilot_throttle else 0.0
                     steering = max(-1, min(pilot_angle, 1)) if pilot_angle else 0.0
+                    print(steering, throttle)
                     return steering, throttle
 
         self.V.add(DriveMode(self.cfg),
@@ -338,9 +345,9 @@ class RL_Driver():
             def run(self, mode, recording, train_state):
                 if mode == 'user':
                     if 1 < train_state < 4:
-                        return True
+                        return False
                     return False
-                return True
+                return False
 
         self.V.add(AiRecordingCondition(), inputs=['user/mode', 'recording', 'train_state'], outputs=['recording'])
 
@@ -378,6 +385,6 @@ if __name__ == '__main__':
         model_type = args['--type']
         transfer = args['--transfer']
 
-        rd = RL_Driver(cfg, model_path=model)
+        rd = RL_Driver(cfg, model_path=model, model_type=model_type, batch_size=256)
         rd.drive()
 

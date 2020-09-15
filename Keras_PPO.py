@@ -3,6 +3,7 @@ import tensorflow.compat.v1 as tf
 tf.disable_v2_behavior()
 from tensorflow.python import keras
 from tensorflow.compat.v1.keras import backend as K
+from tensorflow.compat.v1.keras import utils
 from tensorflow.python.keras.layers import Input, Dense
 from tensorflow.python.keras.models import Model, Sequential
 from tensorflow.python.keras.layers import Convolution2D, MaxPooling2D, Reshape, BatchNormalization
@@ -17,8 +18,8 @@ from tensorflow.python.keras.optimizers import Adam
 from collections import deque
 import random
 from donkeycar.parts.keras import KerasPilot
-import tensorflow_probability as tfp
-tfd = tfp.distributions
+from scipy import signal
+
 
 class MemoryPPO:
     """
@@ -29,19 +30,24 @@ class MemoryPPO:
     https://github.com/openai/spinningup/blob/master/spinup/algos/ppo/ppo.py
     """
 
-    def __init__(self, obs_dim, act_dim, size, gamma=0.99, lam=0.95):
+    def __init__(self, img_dim, speed_dim, act_dim, size, gamma=0.99, lam=0.95):
         # a fucntion so that different dimensions state array shapes are all processed corecctly
         def combined_shape(length, shape=None):
             if shape is None:
                 return (length,)
             return (length, shape) if np.isscalar(shape) else (length, *shape)
+
         # just empty arrays with appropriate sizes
-        self.obs_buf = np.zeros(combined_shape(
-            size, obs_dim), dtype=np.float32)  # states
+        self.img_buf = np.zeros(combined_shape(
+            size, img_dim), dtype=np.float32)  # imgs
+        self.speed_buf = np.zeros(combined_shape(
+            size, speed_dim), dtype=np.float32)  # speeds
         self.act_buf = np.zeros(combined_shape(
             size, act_dim), dtype=np.float32)  # actions
+        
         # actual rwards from state using action
         self.rew_buf = np.zeros(size, dtype=np.float32)
+
         # predicted values of state
         self.val_buf = np.zeros(size, dtype=np.float32)
         self.adv_buf = np.zeros(size, dtype=np.float32)  # gae advantewages
@@ -56,19 +62,21 @@ class MemoryPPO:
         """
         return signal.lfilter([1], [1, float(-discount)], x[::-1], axis=0)[::-1]
 
-    def store(self, obs, act, rew, val):
+    def store(self, img, speed, act, rew, val):
         """
         Append one timestep of agent-environment interaction to the buffer.
         """
         assert self.ptr < self.max_size     # buffer has to have room so you can store
-        self.obs_buf[self.ptr] = obs
+        self.img_buf[self.ptr] = img
+        self.speed_buf[self.ptr] = speed
         self.act_buf[self.ptr] = act
         self.rew_buf[self.ptr] = rew
         self.val_buf[self.ptr] = val
         self.ptr += 1
 
     def finish_path(self, last_val=0):
-        """Finishes an episode of data collection by calculating the diffrent rewards and resetting pointers.
+        """
+        Finishes an episode of data collection by calculating the diffrent rewards and resetting pointers.
         Call this at the end of a trajectory, or when one gets cut off
         by an epoch ending. This looks back in the buffer to where the
         trajectory started, and uses rewards and value estimates from
@@ -85,10 +93,11 @@ class MemoryPPO:
         path_slice = slice(self.path_start_idx, self.ptr)
         rews = np.append(self.rew_buf[path_slice], last_val)
         vals = np.append(self.val_buf[path_slice], last_val)
+
         # the next two lines implement GAE-Lambda advantage calculation
         deltas = rews[:-1] + self.gamma * vals[1:] - vals[:-1]
-        self.adv_buf[path_slice] = self.discount_cumsum(
-            deltas, self.gamma * self.lam)
+        self.adv_buf[path_slice] = self.discount_cumsum(deltas, self.gamma * self.lam) 
+
         # the next line computes rewards-to-go, to be targets for the value function
         self.ret_buf[path_slice] = self.discount_cumsum(rews, self.gamma)[:-1]
         self.path_start_idx = self.ptr
@@ -98,63 +107,90 @@ class MemoryPPO:
         """
         # make a randlim list with batch_size numbers.
         pos_lst = np.random.randint(self.ptr, size=batch_size)
-        return self.obs_buf[pos_lst], self.act_buf[pos_lst], self.adv_buf[pos_lst], self.ret_buf[pos_lst], self.val_buf[pos_lst]
+        return self.img_buf[pos_lst], self.speed_buf[pos_lst], self.act_buf[pos_lst], self.adv_buf[pos_lst], self.ret_buf[pos_lst], self.val_buf[pos_lst]
 
     def clear(self):
         """Set back pointers to the beginning
         """
         self.ptr, self.path_start_idx = 0, 0
 
+
 def proximal_policy_optimization_loss_continuous(advantage, old_prediction):
+    def get_log_probability_density(pred, y):
+        mu_and_sigma = pred
+        mu = mu_and_sigma[:, :2]
+        sigma = mu_and_sigma[:, 2:]
+        variance = K.square(sigma)
+        pdf = 1. / K.sqrt(2. * np.pi * variance) * K.exp(-K.square(y - mu) / (2. * variance))
+        log_pdf = K.log(pdf + K.epsilon())
+
+        return log_pdf
+
     def loss(y_true, y_pred):
-        mean_sq_err = K.mean(K.square(y_pred - y_true), axis=-1)
-        try:
-            PPO_OUT_OF_RANGE = 1000  # negative of -1000
-            checkifzero = K.sum(old_prediction, PPO_OUT_OF_RANGE)
-            divbyzero = old_prediction / checkifzero
-        except:
-            return mean_sq_err
-        PPO_NOISE = 1.0
-        var = keras.backend.square(PPO_NOISE)
-        denom = K.sqrt(2 * np.pi * var)
-        prob_num = K.exp(- K.square(y_true - y_pred) / (2 * var))
-        old_prob_num = K.exp(- K.square(y_true - old_prediction) / (2 * var))
-        prob = prob_num / denom
-        old_prob = old_prob_num / denom
-        r = prob / (old_prob + 1e-10)
         PPO_LOSS_CLIPPING = 0.2
         PPO_ENTROPY_LOSS = 5 * 1e-3  # Does not converge without entropy penalty
 
-        return -K.mean(K.minimum(r * advantage, K.clip(r, min_value=1 - PPO_LOSS_CLIPPING,
-                                                       max_value=1 + PPO_LOSS_CLIPPING) * advantage)) + PPO_ENTROPY_LOSS * (
-                           prob * K.log(prob + 1e-10))
+        log_pdf_new = get_log_probability_density(y_pred, y_true)
+        log_pdf_old = get_log_probability_density(old_prediction, y_true)
 
+        ratio = K.exp(log_pdf_new - log_pdf_old)
+        surrogate1 = ratio * advantage
+        clip_ratio = K.clip(ratio, min_value=(1-PPO_LOSS_CLIPPING), max_value=(1+PPO_LOSS_CLIPPING))
+        surrogate2 = clip_ratio * advantage
 
+        loss_actor = -K.mean(K.minimum(surrogate1, surrogate2))
+
+        sigma = y_pred[:, 2:]
+        variance = K.square(sigma)
+
+        loss_entropy = PPO_ENTROPY_LOSS * K.mean(-(K.log(2*np.pi*variance)+1) / 2)
+
+        return loss_actor+loss_entropy
 
     return loss
+
+
 class PPO(KerasPilot):
-    def __init__(self, num_action, input_shape=(120, 160, 3), *args, **kwargs):
+    def __init__(self, num_action, input_shape=(120, 160, 3), batch_size=64, training=True, model_path=None, *args, **kwargs):
         super(PPO, self).__init__(*args, **kwargs)
 
         self.actor_img, self.actor_speed, self.actor = default_model(num_action, input_shape, actor_critic='actor')
         self.old_actor_img, self.old_actor_speed, self.old_actor = default_model(num_action, input_shape, actor_critic='actor')
-        self.critic_img, self.critic_speed,self.critic_action, self.critic = default_model(num_action, input_shape,actor_critic='critic')
+        self.critic_img, self.critic_speed, self.critic = default_model(num_action, input_shape,actor_critic='critic')
         self.old_actor.set_weights(self.actor.get_weights())
+
+        self.num_action = num_action
         self.n = 0
         self.gamma = 0.99
         self.lmbda = 0.95
+        self.lr = 0.002
         self.eps = 0.1
         self.K = 2
-        self.memory = MemoryPPO(obs_dim=(84,84,3),act_dim=2,size=50000,gamma=0.99, lam=0.95)
+        self.batch_size = batch_size
+        self.model_path = model_path
+        self.optimal = False
+
+        self.r_sum = 0
+        self.last_state = None
+        self.last_action = None
+        self.train_step = 0
+
+        self.memory = MemoryPPO(img_dim=input_shape, speed_dim=(1,), act_dim=num_action, size=self.batch_size, gamma=0.99, lam=0.95)
         self.dummy_advantage = np.zeros((1, 1))
-        self.dummy_old_prediciton = np.zeros((1, 4))
+        self.dummy_old_prediciton = np.zeros((1, 2*num_action))
+
+        if training:
+            self.compile()
+
+    def save(self):
+        self.actor.save('{}_actor.h5'.format(self.model_path))
+        self.critic.save('{}_critic.h5'.format(self.model_path))
+
     def load(self, model_paths):
         '''
         :param model_paths:
         model[0] = actor
-        model[1] = actor_target
-        model[2] = critic
-        model[3] = critic_target
+        model[1] = critic
         :return:
         '''
         self.actor = keras.models.load_model(model_paths[0], compile=False)
@@ -170,18 +206,20 @@ class PPO(KerasPilot):
     def compile(self):
         self.critic.compile(optimizer=Adam(lr=self.lr), loss={'total_reward': 'mean_squared_error'})
 
-    def train(self, batch_size):
-        img,speeds, actions, gae_advantages, rewards, values = self.memory.sample(batch_size)
-        batches = self.memory.sample(batch_size=batch_size)
+    def train(self):
+        imgs, speeds, actions, gae_advantages, rewards, values = self.memory.get_batch(self.batch_size)
         gae_advantages = gae_advantages.reshape(-1, 1)  # batches of shape (1,) required
-        gae_advantages = K.utils.normalize(gae_advantages)  # optionally normalize
+        gae_advantages = utils.normalize(gae_advantages)  # optionally normalize
+
         # calc old_prediction. Required for actor loss.
-        batch_old_prediction = self.get_old_prediction(img,speeds)
+        batch_old_prediction = self.get_old_prediction(imgs, speeds)
+
         # commit training
-        self.actor_network.fit(
-            x=[states, gae_advantages, batch_old_prediction], y=actions, verbose=0)
-        self.critic_network.fit(
-            x=states, y=rewards, epochs=1, verbose=0)
+        self.actor.fit(
+            x=[imgs, speeds, gae_advantages, batch_old_prediction], y=actions, verbose=0)
+        self.critic.fit(
+            x=[imgs, speeds], y=rewards, epochs=1, verbose=0)
+
         # update old network
         alpha = 0.9
         actor_weights = np.array(self.actor.get_weights())
@@ -189,20 +227,87 @@ class PPO(KerasPilot):
         new_weights = alpha * actor_weights + (1 - alpha) * actor_tartget_weights
         self.old_actor.set_weights(new_weights)
 
-    def run(self, img, speed,optimal=False):
-        mu_and_sigma = self.actor_network.predict([img,speed, self.dummy_advantage, self.dummy_old_prediciton])
-        mu = mu_and_sigma[0, 0:2]
-        sigma = mu_and_sigma[0, 2:]
-        if optimal:
-            action = mu
-        else:
-            action = np.random.normal(loc=mu, scale=sigma, size=2)
-        return action
-    def add(self,img,speed):
-        v = self.critic.predict([img,speed]).flatten()
-        self.memory.add(v)
-    def get_old_prediction(self,imgs,speeds):
-        return self.old_actor.predict_on_batch([imgs,speeds, self.dummy_advantage, self.dummy_old_prediciton])
+    def run(self, img, speed, meter, train_state):
+        if train_state > 0:
+            reshaped_img = np.expand_dims(img, axis=0)
+            reshaped_speed = np.expand_dims(speed, axis=0)
+            mu_and_sigma = self.actor.predict([reshaped_img, reshaped_speed, self.dummy_advantage, self.dummy_old_prediciton])
+            mu = mu_and_sigma[0, 0:self.num_action]
+            sigma = mu_and_sigma[0, self.num_action:]
+
+            if self.optimal:
+                action = mu
+            else:
+                action = np.random.normal(loc=mu, scale=sigma, size=2)
+
+            if train_state < 4:
+                if self.train_step > 0:
+                    self.n += 1
+
+                    reward = meter - self.train_step * 0.01
+                    if train_state == 2:
+                        reward -= 100
+                    elif train_state == 3:
+                        reward += 100
+                    done = train_state > 1
+                    self.r_sum += reward
+                    
+                    last_img = self.last_state['img']
+                    last_speed = self.last_state['speed']
+                    v = self._get_v(np.expand_dims(last_img, axis=0), np.expand_dims(last_speed, axis=0))
+                    self.memory.store(last_img, last_speed, self.last_actions, reward ,v)
+
+                    if done or (self.train_step % self.batch_size == 0):
+                        print('reward sum: {}'.format(self.r_sum))
+                        final_val = reward if done else self._get_v(reshaped_img, reshaped_speed)
+                        self.memory.finish_path(final_val)
+
+                        if done:
+                            print("======EPISODE DONE======")
+                            self.r_sum = 0
+                            self.train_step = 0
+                            self.last_state = None
+                            self.last_actions = None
+                        else:
+                            self.last_state = {
+                                        'img': img,
+                                        'speed': speed,
+                                        }
+                            self.last_actions = action
+
+                            self.train_step += 1
+
+                        return 0, 0, True
+
+                self.last_state = {
+                        'img': img,
+                        'speed': speed,
+                        }
+                self.last_actions = action
+                self.train_step += 1
+
+            elif train_state == 4:
+                print("TRAIN START!")
+                self.train()
+                print("TRAIN DONE!")
+                # TODO: check save error / clear했을 때, memory 다 클리어 되는 지 확인
+                # self.save()
+                # print("SAVE DONE!")
+                self.memory.clear()
+                print("MEMORY CLEAR!")
+                return 0, 0, False
+                
+            return action[0], action[1], False
+        return 0, 0, False
+
+    def _get_v(self, img, speed):
+        v = self.critic.predict([img, speed])#.flatten()
+        return v
+
+    def get_old_prediction(self, imgs, speeds):
+        return self.old_actor.predict_on_batch([imgs, speeds, self.dummy_advantage, self.dummy_old_prediciton])
+
+
 def default_model(num_action, input_shape, actor_critic='actor'):
     from tensorflow.python.keras.models import Model
     from tensorflow.python.keras.layers import Input, Lambda, Concatenate
@@ -220,6 +325,7 @@ def default_model(num_action, input_shape, actor_critic='actor'):
         s_in = Input(shape=(1,), name='speed')
         adv_in = Input(shape=(1,))
         old_prediction = Input(shape=(2*num_action,), name='old_prediction_input')
+
         # speed layer
         s = Dense(64)(s_in)
         s = Dropout(0.5)(s)
@@ -233,16 +339,15 @@ def default_model(num_action, input_shape, actor_critic='actor'):
         o = Dense(64)(o)
         o = Dropout(0.5)(o)
         o = Activation('relu')(o)
-        mu = Dense(2, activation='tanh',name="actor_output_mu")(o)
-        sigma = Dense(2, activation='softplus', name="actor_output_sigma")(o)
-        mu_and_sigma = Concatenate([mu, sigma])
-        model = Model(inputs=[img_in, s_in,adv_in,old_prediction],
+        mu = Dense(num_action, activation='tanh',name="actor_output_mu")(o)
+        sigma = Dense(num_action, activation='softplus', name="actor_output_sigma")(o)
+        mu_and_sigma = Concatenate(axis=-1)([mu, sigma])
+
+        model = Model(inputs=[img_in, s_in, adv_in, old_prediction],
                       outputs=mu_and_sigma)
         model.compile(optimizer=Adam(lr=0.002),
-                      loss=[proximal_policy_optimization_loss_continuous(advantage=adv_in,
-                                                                         old_prediction=old_steer_in),
-                            proximal_policy_optimization_loss_continuous(advantage=adv_in,
-                                                                         old_prediction=old_throttle_in)]
+                      loss=proximal_policy_optimization_loss_continuous(advantage=adv_in,
+                                                                         old_prediction=old_prediction))
         # action, action_matrix, prediction from trial_run
         # reward is a function( angle, throttle)
         return img_in, s_in, model
