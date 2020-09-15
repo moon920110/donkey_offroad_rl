@@ -154,9 +154,9 @@ class PPO(KerasPilot):
     def __init__(self, num_action, input_shape=(120, 160, 3), batch_size=64, training=True, model_path=None, *args, **kwargs):
         super(PPO, self).__init__(*args, **kwargs)
 
-        self.actor_img, self.actor_speed, self.actor = default_model(num_action, input_shape, actor_critic='actor')
-        self.old_actor_img, self.old_actor_speed, self.old_actor = default_model(num_action, input_shape, actor_critic='actor')
-        self.critic_img, self.critic_speed, self.critic = default_model(num_action, input_shape,actor_critic='critic')
+        self.actor = default_model(num_action, input_shape, actor_critic='actor')
+        self.old_actor = default_model(num_action, input_shape, actor_critic='actor')
+        self.critic = default_model(num_action, input_shape,actor_critic='critic')
         self.old_actor.set_weights(self.actor.get_weights())
 
         self.num_action = num_action
@@ -293,9 +293,8 @@ class PPO(KerasPilot):
                 print("TRAIN START!")
                 self.train()
                 print("TRAIN DONE!")
-                # TODO: there is a save error
-               # self.save()
-               # print("SAVE DONE!")
+                self.save()  # It is fixed by editing tensorflow_core code
+                print("SAVE DONE!")
                 self.memory.clear()
                 print("MEMORY CLEAR!")
                 return 0, 0, False
@@ -353,7 +352,7 @@ def default_model(num_action, input_shape, actor_critic='actor'):
                                                                          old_prediction=old_prediction))
         # action, action_matrix, prediction from trial_run
         # reward is a function( angle, throttle)
-        return img_in, s_in, model
+        return model
 
     if actor_critic == 'critic':
         # Perception
@@ -380,4 +379,4 @@ def default_model(num_action, input_shape, actor_critic='actor'):
         total_reward = Dense(units=1, activation='linear', name='total_reward')(o)
         model = Model(inputs=[img_in, s_in], outputs=total_reward)
 
-        return img_in, s_in, model
+        return model
