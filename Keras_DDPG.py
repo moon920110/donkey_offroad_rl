@@ -61,6 +61,7 @@ class DDPG(KerasPilot):
         self.model_path = model_path
         self.batch_size = batch_size
         self.train_step = 0
+        self.r_sum = 0
         self.last_state = None
         self.last_actions = None
 
@@ -70,6 +71,9 @@ class DDPG(KerasPilot):
         # Initialize for later gradient calculations
         self.sess.run(tf.initialize_all_variables())
         self.memory= Memory(500000)
+
+        self.actor.summary()
+        self.critic.summary()
 
         if training:
             self.compile()
@@ -193,17 +197,19 @@ class DDPG(KerasPilot):
                     elif train_state == 3:
                         reward += 100
                     done = train_state > 1
+                    self.r_sum += reward
 
                     self.memory.save(self.last_state['img'], self.last_state['speed'], self.last_actions, reward, img, speed, done)
 
                     if done:
                         print("=======EPISODE DONE======")
-                        print('reward: {}'.format(reward))
+                        print('reward sum: {}'.format(self.r_sum))
+                        self.r_sum = 0
                         self.train_step = 0
                         self.last_state = None
                         self.last_actions = None
 
-                        return 0, 0
+                        return 0, 0, True
 
                 self.last_state = {
                         'img': img,
@@ -219,10 +225,10 @@ class DDPG(KerasPilot):
                     print("TRAIN DONE!")
                     self.save()
                     print("SAVE DONE!")
-                return 0, 0
+                return 0, 0, False
 
-            return a_t[0], a_t[1]
-        return 0, 0
+            return a_t[0], a_t[1], False
+        return 0, 0, False
 
 
 def default_model(num_action, input_shape, actor_critic='actor'):
@@ -306,13 +312,13 @@ def default_model(num_action, input_shape, actor_critic='actor'):
         a = BatchNormalization()(a)
         a = Dropout(0.5)(a)
         a = Activation('relu')(a)
+
         o = Concatenate(axis=1)([x, s, a])
         o = Dense(64)(o)
-        a = BatchNormalization()(a)
+        o = BatchNormalization()(o)
         o = Dropout(0.5)(o)
         o = Activation('relu')(o)
-        o = Dense(1)(o)
-        q = Activation('relu')(o)
+        q = Dense(1)(o)
         model = Model(inputs=[img_in, s_in, a_in], outputs=q)
 
         return img_in, s_in, a_in, model
