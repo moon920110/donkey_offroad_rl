@@ -240,36 +240,35 @@ def default_model(num_action, input_shape, actor_critic='actor'):
 
         # Perception
         x = Convolution2D(filters=24, kernel_size=(5, 5), strides=(2, 2), activation='relu')(img_in)
-        x = BatchNormalization()(x)
+        #x = BatchNormalization()(x)
         x = Convolution2D(filters=32, kernel_size=(5, 5), strides=(2, 2), activation='relu')(x)
-        x = BatchNormalization()(x)
+        #x = BatchNormalization()(x)
         x = Convolution2D(filters=64, kernel_size=(5, 5), strides=(2, 2), activation='relu')(x)
-        x = BatchNormalization()(x)
+        #x = BatchNormalization()(x)
         x = Convolution2D(filters=64, kernel_size=(3, 3), strides=(2, 2), activation='relu')(x)
-        x = BatchNormalization()(x)
+        #x = BatchNormalization()(x)
         x = Convolution2D(filters=64, kernel_size=(3, 3), strides=(1, 1), activation='relu')(x)
-        x = BatchNormalization()(x)
+        #x = BatchNormalization()(x)
         x = Flatten(name='flattened')(x)
         s_in = Input(shape=(1,), name='speed')
 
         # speed layer
         s = Dense(64)(s_in)
-        s = BatchNormalization()(s)
+        #s = BatchNormalization()(s)
         s = Dropout(0.5)(s)
         s = Activation('relu')(s)
         s = Dense(64)(s)
-        s = BatchNormalization()(s)
+        #s = BatchNormalization()(s)
         s = Dropout(0.5)(s)
         s = Activation('relu')(s)
 
         #action layer
         o = Concatenate(axis=1)([x, s])
         o = Dense(64)(o)
-        o = BatchNormalization()(o)
+        #o = BatchNormalization()(o)
         o = Dropout(0.5)(o)
         o = Activation('relu')(o)
         o = Dense(num_action)(o)
-        o = Activation('linear')(o)
 
         model = Model(inputs=[img_in, s_in],
                       outputs=o)
