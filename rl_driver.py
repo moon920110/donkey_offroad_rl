@@ -38,6 +38,8 @@ from donkeycar.utils import *
 from normalizer import LN
 from Keras_DDPG import DDPG
 from Keras_PPO import PPO
+from Keras_SAC import SAC
+from Keras_TD3 import TD3
 
 
 class RL_Driver():
@@ -53,7 +55,8 @@ class RL_Driver():
         self.model_dict = {
                 'DDPG': DDPG,
                 'PPO': PPO,
-#                'SAC': SAC,
+                'SAC': SAC,
+                'TD3': TD3,
                 }
 
         self.BATCH_SIZE = batch_size
