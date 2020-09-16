@@ -1,4 +1,5 @@
 import tensorflow.compat.v1 as tf
+
 tf.disable_v2_behavior()
 from tensorflow.python import keras
 from tensorflow.compat.v1.keras import backend as K
@@ -17,10 +18,6 @@ import random
 from donkeycar.parts.keras import KerasPilot
 
 
-class OU(object):
-    def function(self, x ,mu, theta, sigma):
-        return theta * (mu - x) + sigma * np.random.randn(1)
-
 
 class Memory:
     def __init__(self, capacity):
@@ -34,29 +31,24 @@ class Memory:
         return random.sample(self.memory, batch_size)
 
 
-class DDPG(KerasPilot):
-    def __init__(self, num_action, input_shape=(120, 160, 3), batch_size=64, training=True, model_path=None, *args, **kwargs):
+class TD3(KerasPilot):
+    def __init__(self, num_action, input_shape=(120, 160, 3), batch_size=64, training=True, model_path=None, *args,
+                 **kwargs):
         super(DDPG, self).__init__(*args, **kwargs)
 
         self.actor_img, self.actor_speed, self.actor = default_model(num_action, input_shape, actor_critic='actor')
         _, _, self.actor_target = default_model(num_action, input_shape, actor_critic='actor')
-        self.critic_img, self.critic_speed, self.critic_action, self.critic = default_model(num_action,input_shape,actor_critic='critic')
-        _, _, _, self.critic_target = default_model(num_action, input_shape, actor_critic='critic')
-
-        self.actor_critic_grad = tf.placeholder(tf.float32,[None, 2]) # where we will feed de/dC (from critic)
-        actor_model_weights = self.actor.trainable_weights
-        self.actor_grads = tf.gradients(self.actor.output,
-                                        actor_model_weights, -self.actor_critic_grad)  # dC/dA (from actor)
-        grads = zip(self.actor_grads, actor_model_weights)
+        self.critic_img1, self.critic_speed1, self.critic_action1, self.critic1 = default_model(num_action, input_shape,
+                                                                                                actor_critic='critic')
+        self.critic_img2, self.critic_speed2, self.critic_action2, self.critic2 = default_model(num_action, input_shape,
+                                                                                                actor_critic='critic')
+        _, _, self.critic_target1 = default_model(num_action, input_shape, actor_critic='critic')
+        _, _, self.critic_target2 = default_model(num_action, input_shape, actor_critic='critic')
 
         self.lr = 0.002
-        self.optimize = tf.train.AdamOptimizer(self.lr).apply_gradients(grads)
-        self.critic_grads = tf.gradients(self.critic.output,
-                                         self.critic_action)  # where we calcaulte de/dC for feeding above
-        self.epsilon = 1
-        self.epsilon_decay = -5000
-        self.sess = tf.Session()
-        self.ou = OU()
+        self.critic_optimizer = tf.keras.optimizers.Adam(lr=self.lr)
+        self.actor_optimizer = tf.keras.optimizers.Adam(lr=self.lr)
+
         self.n = 0
         self.model_path = model_path
         self.batch_size = batch_size
@@ -67,10 +59,12 @@ class DDPG(KerasPilot):
 
         self.tau = 1e-3
         self.gamma = 0.99
-        K.set_session(self.sess)
+        self.policy_noise = 0.2
+        self.noise_clip = 0.5
+        self.policy_freq = 2
+        self.total_it = 0
         # Initialize for later gradient calculations
-        self.sess.run(tf.initialize_all_variables())
-        self.memory= Memory(500000)
+        self.memory = Memory(500000)
 
         self.actor.summary()
         self.critic.summary()
@@ -80,9 +74,11 @@ class DDPG(KerasPilot):
 
     def save(self):
         self.actor.save('{}_actor.h5'.format(self.model_path))
-        self.critic.save('{}_critic.h5'.format(self.model_path))
+        self.critic1.save('{}_critic.h5'.format(self.model_path))
+        self.critic2.save('{}_critic.h5'.format(self.model_path))
         self.actor_target.save('{}_actor_target.h5'.format(self.model_path))
-        self.critic_target.save('{}_critic_target.h5'.format(self.model_path))
+        self.critic_target1.save('{}_critic_target1.h5'.format(self.model_path))
+        self.critic_target2.save('{}_critic_target2.h5'.format(self.model_path))
 
     def load(self, model_paths):
         '''
@@ -93,22 +89,26 @@ class DDPG(KerasPilot):
         model[3] = critic_target
         :return:
         '''
-        self.actor = keras.models.load_model(model_paths[0],compile=False)
-        self.actor_target = keras.models.load_model(model_paths[1],compile=False)
-        self.critic = keras.models.load_model(model_paths[2], compile=False)
-        self.critic_target = keras.models.load_model(model_paths[3], compile=False)
+        self.actor = keras.models.load_model(model_paths[0], compile=False)
+        self.actor_target = keras.models.load_model(model_paths[1], compile=False)
+        self.critic1 = keras.models.load_model(model_paths[2], compile=False)
+        self.critic_target1 = keras.models.load_model(model_paths[3], compile=False)
+        self.critic2 = keras.models.load_model(model_paths[4], compile=False)
+        self.critic_target2 = keras.models.load_model(model_paths[5], compile=False)
 
-    def load_weights(self, model_paths,by_name=True):
+    def load_weights(self, model_paths, by_name=True):
         self.actor = keras.models.load_weights(model_paths[0], by_name=by_name)
         self.actor_target = keras.models.load_weights(model_paths[1], by_name=by_name)
-        self.critic = keras.models.load_weights(model_paths[2], by_name=by_name)
-        self.critic_target = keras.models.load_weights(model_paths[3], by_name=by_name)
+        self.critic1 = keras.models.load_weights(model_paths[2], by_name=by_name)
+        self.critic_target1 = keras.models.load_weights(model_paths[3], by_name=by_name)
+        self.critic2 = keras.models.load_weights(model_paths[4], by_name=by_name)
+        self.critic_target2 = keras.models.load_weights(model_paths[5], by_name=by_name)
 
     def shutdown(self):
         pass
 
     def compile(self):
-        self.critic.compile(optimizer=Adam(lr=self.lr),loss='mse')
+        self.critic1.compile(optimizer=Adam(lr=self.lr), loss='mse')
         self.actor.compile(loss="mse", optimizer=Adam(lr=self.lr))
 
     def train_critic(self, batches):
@@ -125,11 +125,23 @@ class DDPG(KerasPilot):
         speeds = np.reshape(speeds, (-1, 1))
         next_speeds = np.reshape(next_speeds, (-1, 1))
 
-        target_actions = self.actor_target.predict([next_imgs, next_speeds])
-        target_q = self.critic_target.predict([next_imgs, next_speeds, target_actions])
-        rewards += self.gamma * target_q *(1-dones)
+        noise = np.clip(np.random.randn(2) * self.policy_noise, -self.noise_clip, self.noise_clip)
+        target_actions = self.actor_target(next_imgs,next_speeds) + noise
+        target_actions = K.clip(target_actions,[-0.8,0],[0.8,1])
 
-        evaluation = self.critic.fit([imgs, speeds, actions], rewards, verbose=0)
+        target_q1 = self.critic_target1.predict([next_imgs, next_speeds, target_actions])
+        target_q2 = self.critic_target2.predict([next_imgs, next_speeds, target_actions])
+        target_q = K.min(target_q1,target_q2)
+        rewards += self.gamma * target_q * (1 - dones)
+        with tf.GradientTape() as tape:
+            q1 = self.critic1([imgs,speeds,actions])
+            q2 = self.critic2([imgs, speeds, actions])
+            loss1 = tf.reduce_mean(tf.keras.losses.mean_squared_error(rewards, q1))
+            loss2 = tf.reduce_mean(tf.keras.losses.mean_squared_error(rewards, q2))
+            loss = loss1 + loss2
+        grads = tape.gradient(loss, self.critic1.trainable_weights + self.critic2.trainable_weights)
+        self.critic1.optimizer.apply_gradients(
+            zip(grads, self.critic1.trainable_weights + self.critic2.trainable_weights))
 
     def train_actor(self, batches):
         batches = np.array(batches).transpose()
@@ -144,19 +156,14 @@ class DDPG(KerasPilot):
         speeds = np.reshape(speeds, (-1, 1))
         next_speeds = np.reshape(next_speeds, (-1, 1))
 
-        predicted_actions = self.actor.predict([imgs, speeds])
+        with tf.GradientTape() as tape:
+            actions = self.actor([imgs,speeds])
+            actions = tf.clip_by_value(actions, [-0.8,0],[0.8,1])
+            q = self.critic([state, actions])
+            loss = -tf.reduce_mean(q)
+        grads = tape.gradient(loss, self.actor.trainable_weights)
+        self.actor.optimizer.apply_gradients(zip(grads, self.actor.trainable_weights))
 
-        grads = self.sess.run(self.critic_grads, feed_dict={
-            self.critic_img: imgs,
-            self.critic_speed: speeds,
-            self.critic_action: predicted_actions,
-        })[0]
-
-        self.sess.run(self.optimize, feed_dict={
-            self.actor_img: imgs,
-            self.actor_speed: speeds,
-            self.actor_critic_grad: grads,
-        })
 
     def train(self):
         batches = self.memory.sample(batch_size=self.batch_size)
@@ -170,22 +177,22 @@ class DDPG(KerasPilot):
             a_t_w[i] = self.tau * a_w[i] + (1 - self.tau) * a_t_w[i]
         self.actor_target.set_weights(a_t_w)
 
-        # critic transfer weights
-        c_w, c_t_w = self.critic.get_weights(), self.critic_target.get_weights()
+        # critic1 transfer weights
+        c_w, c_t_w = self.critic1.get_weights(), self.critic_target1.get_weights()
         for i in range(len(c_w)):
             c_t_w[i] = self.tau * c_w[i] + (1 - self.tau) * c_t_w[i]
-        self.critic_target.set_weights(c_t_w)
+        self.critic_target1.set_weights(c_t_w)
 
+        # critic2 transfer weights
+        c_w, c_t_w = self.critic2.get_weights(), self.critic_target2.get_weights()
+        for i in range(len(c_w)):
+            c_t_w[i] = self.tau * c_w[i] + (1 - self.tau) * c_t_w[i]
+        self.critic_target2.set_weights(c_t_w)
     def run(self, img, speed, meter, train_state):
         if train_state > 0:
             img = np.expand_dims(img, axis=0)
-            reshaped_speed = np.reshape(speed,(1, 1))
+            reshaped_speed = np.reshape(speed, (1, 1))
             actions = self.actor.predict([img, reshaped_speed])
-            noise_t = np.zeros(2)
-            noise_t[0] = max(self.epsilon, 0) * self.ou.function(actions[0][0], 0, 0.6, 0.3) # steering
-            noise_t[1] = max(self.epsilon, 0) * self.ou.function(actions[0][1], 0.5, 1, 0.15) # throttle
-            a_t = [(actions[0][0] + noise_t[0]), (actions[0][1] + noise_t[1])] # steering, throttle
-            self.epsilon -= 1.0 / self.epsilon_decay
 
             if train_state < 4:
                 if self.train_step > 0:
@@ -199,7 +206,8 @@ class DDPG(KerasPilot):
                     done = train_state > 1
                     self.r_sum += reward
 
-                    self.memory.save(self.last_state['img'], self.last_state['speed'], self.last_actions, reward, img, speed, done)
+                    self.memory.save(self.last_state['img'], self.last_state['speed'], self.last_actions, reward, img,
+                                     speed, done)
 
                     if done:
                         print("=======EPISODE DONE======")
@@ -212,9 +220,9 @@ class DDPG(KerasPilot):
                         return 0, 0, True
 
                 self.last_state = {
-                        'img': img,
-                        'speed': speed,
-                        }
+                    'img': img,
+                    'speed': speed,
+                }
                 self.last_actions = a_t
                 self.train_step += 1
 
@@ -237,42 +245,42 @@ def default_model(num_action, input_shape, actor_critic='actor'):
     LR = 1e-4  # Lower lr stabilises training greatly
     img_in = Input(shape=input_shape, name='img_in')
     if actor_critic == "actor":
-
         # Perception
         x = Convolution2D(filters=24, kernel_size=(5, 5), strides=(2, 2), activation='relu')(img_in)
-        #x = BatchNormalization()(x)
+        x = BatchNormalization()(x)
         x = Convolution2D(filters=32, kernel_size=(5, 5), strides=(2, 2), activation='relu')(x)
-        #x = BatchNormalization()(x)
+        x = BatchNormalization()(x)
         x = Convolution2D(filters=64, kernel_size=(5, 5), strides=(2, 2), activation='relu')(x)
-        #x = BatchNormalization()(x)
+        x = BatchNormalization()(x)
         x = Convolution2D(filters=64, kernel_size=(3, 3), strides=(2, 2), activation='relu')(x)
-        #x = BatchNormalization()(x)
+        x = BatchNormalization()(x)
         x = Convolution2D(filters=64, kernel_size=(3, 3), strides=(1, 1), activation='relu')(x)
-        #x = BatchNormalization()(x)
+        x = BatchNormalization()(x)
         x = Flatten(name='flattened')(x)
         s_in = Input(shape=(1,), name='speed')
 
         # speed layer
         s = Dense(64)(s_in)
-        #s = BatchNormalization()(s)
+        s = BatchNormalization()(s)
         s = Dropout(0.5)(s)
         s = Activation('relu')(s)
         s = Dense(64)(s)
-        #s = BatchNormalization()(s)
+        s = BatchNormalization()(s)
         s = Dropout(0.5)(s)
         s = Activation('relu')(s)
 
-        #action layer
+        # action layer
         o = Concatenate(axis=1)([x, s])
         o = Dense(64)(o)
-        #o = BatchNormalization()(o)
+        o = BatchNormalization()(o)
         o = Dropout(0.5)(o)
         o = Activation('relu')(o)
         o = Dense(num_action)(o)
+        o = Activation('linear')(o)
 
         model = Model(inputs=[img_in, s_in],
                       outputs=o)
-        
+
         # action, action_matrix, prediction from trial_run
         # reward is a function( angle, throttle)
         return img_in, s_in, model

@@ -42,7 +42,7 @@ class SAC(KerasPilot):
         self.throttle_bias = tf.tenseor((throttle_range[1] + throttle_range[0]) / 2)
 
         self.actor_img, self.actor_speed, self.actor = default_model(num_action, input_shape, actor_critic='actor')
-
+        _, _, self.actor_target = default_model(num_action, input_shape, actor_critic='actor')
         self.critic_img1, self.critic_speed1,self.critic_action1, self.critic1 = default_model(num_action, input_shape,actor_critic='critic')
         self.critic_img2, self.critic_speed2,self.critic_action2, self.critic2 = default_model(num_action, input_shape, actor_critic='critic')
         _, _, self.critic_target1 = default_model(num_action, input_shape, actor_critic='critic')
@@ -52,6 +52,15 @@ class SAC(KerasPilot):
         self.n = 0
         self.gamma = 0.99
         self.memory = Memory(50000)
+        self.train_step = 0
+        self.last_state = None
+        self.last_actions = None
+    def save(self):
+        self.actor.save('{}_actor.h5'.format(self.model_path))
+        self.critic.save('{}_critic.h5'.format(self.model_path))
+        self.actor_target.save('{}_actor_target.h5'.format(self.model_path))
+        self.critic_target1.save('{}_critic_target1.h5'.format(self.model_path))
+        self.critic_target2.save('{}_critic_target2.h5'.format(self.model_path))
     def load(self, model_paths):
         '''
         :param model_paths:
@@ -147,8 +156,7 @@ class SAC(KerasPilot):
             # Sample actions from the policy for current states
             pi, log_pi = self.actor([imgs,speeds])
 
-            alpha_loss = tf.reduce_mean( - self.alpha*(log_pi +
-                                                       self.target_entropy))
+            alpha_loss = tf.reduce_mean( - self.alpha*(log_pi + self.target_entropy))
 
         variables = [self.alpha]
         grads = tape.gradient(alpha_loss, variables)
@@ -157,7 +165,7 @@ class SAC(KerasPilot):
         batches = self.memory.sample(batch_size=batch_size)
         self.train_critic(batches)
         self.train_actor(batches)
-
+        self.update_alpha(batches)
         # update weight
         a_w, a_t_w = self.actor.get_weights(), self.actor_target.get_weights()
 
@@ -172,10 +180,9 @@ class SAC(KerasPilot):
             c_t_w[i] = self.tau * c_w[i] + (1 - self.tau) * c_t_w[i]
         self.critic_target.set_weights(c_t_w)
 
-    def run(self, img, speed):
+    def run(self, img, speed,meter,train_state):
         speed = np.reshape(speed, (1, 1))
         # run by Gaussian Policy (other case Deterministic Policy)
-
         mu,log_std = self.actor.predict([img, speed])
 
         ste_std = tf.exp(log_std[0])
@@ -197,8 +204,44 @@ class SAC(KerasPilot):
         thr_log_prob = thr_log_prob.sum(1, keepdim=True)
         ste_mu = tf.tanh(mu[0]) * self.steer_scale + self.steer_bias
         thr_mu =tf.tanh(mu[1]) * self.action_scale + self.action_bias
-        return [steer,throttle], [ste_log_prob,thr_log_prob], [ste_mu,thr_mu]
+        #return [steer,throttle], [ste_log_prob,thr_log_prob], [ste_mu,thr_mu]
+        if train_state < 4:
+            if self.train_step > 0 :
+                self.n += 1
+                reward = mete - self.train_step * 0.01
+                if train_state == 2:
+                    reward -= 100
+                elif train_state == 3:
+                    reward += 100
+                done = train_state > 1
+                self.memory.save(self.last_state['img'], self.last_state['speed'], self.last_actions, reward, img, speed, done)
+                if done:
+                    print("=======EPISODE DONE======")
+                    print('reward: {}'.format(reward))
+                    self.train_step = 0
+                    self.last_state = None
+                    self.last_actions = None
 
+                    return 0, 0
+
+            self.last_state = {
+                'img': img,
+                'speed': speed,
+            }
+            self.last_actions = a_t
+            self.train_step += 1
+
+        elif train_state == 4:
+            if self.n > self.batch_size:
+                print("TRAIN START!")
+                self.train()
+                print("TRAIN DONE!")
+                self.save()
+                print("SAVE DONE!")
+            return 0, 0
+
+        return steer, throttle
+    return 0, 0
 
 def default_model(num_action, input_shape, actor_critic='actor'):
     from tensorflow.python.keras.models import Model
@@ -270,13 +313,13 @@ def default_model(num_action, input_shape, actor_critic='actor'):
         a = Dense(32)(a)
         a = Dropout(0.5)(a)
         a = Activation('relu')(a)
+
         o = Concatenate(axis=1)([x, s, a])
         o = Dense(64)(o)
         o = Dropout(0.5)(o)
         o = Activation('relu')(o)
         o = Dense(1)(o)
         o = Dropout(0.5)(o)
-        q = Activation('relu')(o)
         model = Model(inputs=[img_in, s_in, a_in], outputs=q)
 
         return img_in, s_in, a_in, model
