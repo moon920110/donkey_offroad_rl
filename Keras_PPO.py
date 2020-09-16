@@ -222,7 +222,6 @@ class PPO(KerasPilot):
             x=[imgs, speeds, gae_advantages, batch_old_prediction], y=actions, verbose=0)
         self.critic.fit(
             x=[imgs, speeds], y=rewards, epochs=1, verbose=0)
-
         # update old network
         alpha = 0.9
         actor_weights = np.array(self.actor.get_weights())
@@ -349,8 +348,12 @@ def default_model(num_action, input_shape, actor_critic='actor'):
         model = Model(inputs=[img_in, s_in, adv_in, old_prediction],
                       outputs=mu_and_sigma)
         model.compile(optimizer=Adam(lr=0.002),
+<<<<<<< HEAD
+                      loss=proximal_policy_optimization_loss_continuous(advantage=adv_in,old_prediction=old_prediction))
+=======
                       loss=proximal_policy_optimization_loss_continuous(advantage=adv_in,
                                                                          old_prediction=old_prediction))
+>>>>>>> 6beb3688d93df1213ad8f76030adb8054b0b89e8
         # action, action_matrix, prediction from trial_run
         # reward is a function( angle, throttle)
         return img_in, s_in, model
