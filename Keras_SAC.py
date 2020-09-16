@@ -57,7 +57,8 @@ class SAC(KerasPilot):
         self.last_actions = None
     def save(self):
         self.actor.save('{}_actor.h5'.format(self.model_path))
-        self.critic.save('{}_critic.h5'.format(self.model_path))
+        self.critic1.save('{}_critic1.h5'.format(self.model_path))
+        self.critic2.save('{}_critic2.h5'.format(self.model_path))
         self.actor_target.save('{}_actor_target.h5'.format(self.model_path))
         self.critic_target1.save('{}_critic_target1.h5'.format(self.model_path))
         self.critic_target2.save('{}_critic_target2.h5'.format(self.model_path))
@@ -142,7 +143,7 @@ class SAC(KerasPilot):
         q1 = self.critic1.predict([imgs, speeds, actions])
         q2 = self.critic2.predict([imgs, speeds, actions])
         tq = tf.minimum(tq1, tq2)
-        self.actor.fit(tq,self.alpha * log_pi)
+        self.actor.fit(tq,self.alpha * log_pi) # tq - self.alpha * log_pi?
     def update_alpha(self, batches):
         batches = np.array(batches).transpose()
         imgs = np.vstack(batches[0])
@@ -174,36 +175,21 @@ class SAC(KerasPilot):
             a_t_w[i] = self.tau * a_w[i] + (1 - self.tau) * a_t_w[i]
         self.actor_target.set_weights(a_t_w)
 
-        # critic transfer weights
-        c_w, c_t_w = self.critic.get_weights(), self.critic_target.get_weights()
+        # critic1 transfer weights
+        c_w, c_t_w = self.critic1.get_weights(), self.critic_target1.get_weights()
         for i in range(len(c_w)):
             c_t_w[i] = self.tau * c_w[i] + (1 - self.tau) * c_t_w[i]
-        self.critic_target.set_weights(c_t_w)
+        self.critic_target1.set_weights(c_t_w)
 
+        # critic2 transfer weights
+        c_w, c_t_w = self.critic2.get_weights(), self.critic_target2.get_weights()
+        for i in range(len(c_w)):
+            c_t_w[i] = self.tau * c_w[i] + (1 - self.tau) * c_t_w[i]
+        self.critic_target2.set_weights(c_t_w)
     def run(self, img, speed,meter,train_state):
         speed = np.reshape(speed, (1, 1))
         # run by Gaussian Policy (other case Deterministic Policy)
-        mu,log_std = self.actor.predict([img, speed])
-
-        ste_std = tf.exp(log_std[0])
-        ste_normal = tfd.Normal(mu[0],std[0])
-        thr_std = tf.exp(log_std[1])
-        thr_normal = tfd.Normal(mu[1], std[1])
-        sx_t = ste_normal.sample()  # for reparameterization trick (mean + std * N(0,1))
-        tx_t = thr_normal.sample()
-        sy_t = tf.tanh(sx_t)
-        ty_t = tf.tanh(tx_t)
-        steer = sy_t * self.steer_scale + self.steer_bias
-        throttle = ty_t * self.throttle_scale + self.throttle_bias
-        ste_log_prob = ste_normal.log_prob(sx_t)
-        thr_log_prob = thr_normal.log_prob(tx_t)
-        # Enforcing Action Bound
-        ste_log_prob -= tf.log(self.steer_scale * (1 - sy_t.pow(2)) + 1e-6)
-        thr_log_prob -= tf.log(self.throttle_scale * (1 - ty_t.pow(2)) + 1e-6)
-        ste_log_prob = ste_log_prob.sum(1, keepdim=True)
-        thr_log_prob = thr_log_prob.sum(1, keepdim=True)
-        ste_mu = tf.tanh(mu[0]) * self.steer_scale + self.steer_bias
-        thr_mu =tf.tanh(mu[1]) * self.action_scale + self.action_bias
+        actions,_ = self.actor.predict([img, speed])
         #return [steer,throttle], [ste_log_prob,thr_log_prob], [ste_mu,thr_mu]
         if train_state < 4:
             if self.train_step > 0 :
@@ -278,10 +264,16 @@ def default_model(num_action, input_shape, actor_critic='actor'):
         std = Dense(num_action)(o)
         std = Dropout(0.5)(std)
         std = Activation('tanh')(std)
-        log _std = Lambda(lambda x: tf.clip_by_value(x,min=-20,max=2))(std)
-
+        log_std = Lambda(lambda x: tf.clip_by_value(x,min=-20,max=2))(std)
+        std = tf.exp(log_std)
+        dist = tfp.distributions.Normal(mu, std)
+        actions = dist.sample()
+        actions = tf.tanh(actions)
+        log_pi = dist.log_prob(actions)
+        log_pi = log_pi - tf.reduce_sum(tf.math.log(1 - actions ** 2 + EPSILON), axis=1,
+                                         keepdims=True)
         model = Model(inputs=[img_in, s_in],
-                      outputs=[mu,log_std])
+                      outputs=[actions,log_pi])
 
         # action, action_matrix, prediction from trial_run
         # reward is a function( angle, throttle)
