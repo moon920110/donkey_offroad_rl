@@ -18,6 +18,7 @@ import random
 from donkeycar.parts.keras import KerasPilot
 
 
+
 class Memory:
     def __init__(self, capacity):
         self.capacity = capacity
@@ -31,15 +32,18 @@ class Memory:
 
 
 class TD3(KerasPilot):
-    def __init__(self, num_action, input_shape=(120, 160, 3), batch_size=64, training=True, model_path=None, *args, **kwargs):
-        super(TD3, self).__init__(*args, **kwargs)
+    def __init__(self, num_action, input_shape=(120, 160, 3), batch_size=64, training=True, model_path=None, *args,
+                 **kwargs):
+        super(DDPG, self).__init__(*args, **kwargs)
 
         self.actor_img, self.actor_speed, self.actor = default_model(num_action, input_shape, actor_critic='actor')
         _, _, self.actor_target = default_model(num_action, input_shape, actor_critic='actor')
-        self.critic_img1, self.critic_speed1, self.critic_action1, self.critic1 = default_model(num_action, input_shape, actor_critic='critic')
-        self.critic_img2, self.critic_speed2, self.critic_action2, self.critic2 = default_model(num_action, input_shape, actor_critic='critic')
-        _, _, _, self.critic_target1 = default_model(num_action, input_shape, actor_critic='critic')
-        _, _, _, self.critic_target2 = default_model(num_action, input_shape, actor_critic='critic')
+        self.critic_img1, self.critic_speed1, self.critic_action1, self.critic1 = default_model(num_action, input_shape,
+                                                                                                actor_critic='critic')
+        self.critic_img2, self.critic_speed2, self.critic_action2, self.critic2 = default_model(num_action, input_shape,
+                                                                                                actor_critic='critic')
+        _, _, self.critic_target1 = default_model(num_action, input_shape, actor_critic='critic')
+        _, _, self.critic_target2 = default_model(num_action, input_shape, actor_critic='critic')
 
         self.lr = 0.002
         self.critic_optimizer = tf.keras.optimizers.Adam(lr=self.lr)
@@ -60,8 +64,11 @@ class TD3(KerasPilot):
         self.policy_freq = 2
         self.total_it = 0
         # Initialize for later gradient calculations
-        self.memory = Memory(50000)
+        self.memory = Memory(500000)
 
+        self.actor.summary()
+        self.critic1.summary()
+        self.critic2.summary()
         if training:
             self.compile()
 
@@ -101,8 +108,9 @@ class TD3(KerasPilot):
         pass
 
     def compile(self):
-        self.critic1.compile(optimizer=tf.train.AdamOptimizer(self.lr), loss='mse')
-        self.actor.compile(loss="mse", optimizer=tf.train.AdamOptimizer(self.lr))
+        self.critic1.compile(optimizer=Adam(lr=self.lr), loss='mse')
+        self.critic2.compile(optimizer=Adam(lr=self.lr), loss='mse')
+        self.actor.compile(loss="mse", optimizer=Adam(lr=self.lr))
 
     def train_critic(self, batches):
         batches = np.array(batches).transpose()
@@ -119,20 +127,20 @@ class TD3(KerasPilot):
         next_speeds = np.reshape(next_speeds, (-1, 1))
 
         noise = np.clip(np.random.randn(2) * self.policy_noise, -self.noise_clip, self.noise_clip)
-        target_actions = self.actor_target([next_imgs, next_speeds]) + noise
-        target_actions = K.clip(target_actions, [-0.8,0], [0.8,1])
+        target_actions = self.actor_target(next_imgs,next_speeds) + noise
+        target_actions = K.clip(target_actions,[-0.8,0],[0.8,1])
 
-        target_q1 = self.critic_target1.predict([next_imgs, next_speeds, target_actions], steps=1)
-        target_q2 = self.critic_target2.predict([next_imgs, next_speeds, target_actions], steps=1)
-        target_q = K.minimum(target_q1, target_q2)
+        target_q1 = self.critic_target1.predict([next_imgs, next_speeds, target_actions])
+        target_q2 = self.critic_target2.predict([next_imgs, next_speeds, target_actions])
+        target_q = K.min(target_q1,target_q2)
         rewards += self.gamma * target_q * (1 - dones)
         with tf.GradientTape() as tape:
-            q1 = self.critic1([imgs, speeds, actions])
+            q1 = self.critic1([imgs,speeds,actions])
             q2 = self.critic2([imgs, speeds, actions])
             loss1 = tf.reduce_mean(tf.keras.losses.mean_squared_error(rewards, q1))
             loss2 = tf.reduce_mean(tf.keras.losses.mean_squared_error(rewards, q2))
             loss = loss1 + loss2
-        grads = tf.gradients(loss, self.critic1.trainable_weights + self.critic2.trainable_weights)
+        grads = tape.gradient(loss, self.critic1.trainable_weights + self.critic2.trainable_weights)
         self.critic1.optimizer.apply_gradients(
             zip(grads, self.critic1.trainable_weights + self.critic2.trainable_weights))
 
@@ -152,11 +160,11 @@ class TD3(KerasPilot):
         with tf.GradientTape() as tape:
             actions = self.actor([imgs,speeds])
             actions = tf.clip_by_value(actions, [-0.8,0],[0.8,1])
-            # TODO: Which critic ???
-            q = self.critic([state, actions])
+            q = self.critic1([state, actions])
             loss = -tf.reduce_mean(q)
         grads = tape.gradient(loss, self.actor.trainable_weights)
         self.actor.optimizer.apply_gradients(zip(grads, self.actor.trainable_weights))
+
 
     def train(self):
         batches = self.memory.sample(batch_size=self.batch_size)
@@ -181,12 +189,11 @@ class TD3(KerasPilot):
         for i in range(len(c_w)):
             c_t_w[i] = self.tau * c_w[i] + (1 - self.tau) * c_t_w[i]
         self.critic_target2.set_weights(c_t_w)
-
     def run(self, img, speed, meter, train_state):
         if train_state > 0:
             img = np.expand_dims(img, axis=0)
             reshaped_speed = np.reshape(speed, (1, 1))
-            actions = self.actor.predict([img, reshaped_speed])[0]
+            actions = self.actor.predict([img, reshaped_speed])
 
             if train_state < 4:
                 if self.train_step > 0:
@@ -217,7 +224,7 @@ class TD3(KerasPilot):
                     'img': img,
                     'speed': speed,
                 }
-                self.last_actions = actions
+                self.last_actions = a_t
                 self.train_step += 1
 
             elif train_state == 4:
@@ -229,7 +236,7 @@ class TD3(KerasPilot):
                     print("SAVE DONE!")
                 return 0, 0, False
 
-            return actions[0], actions[1], False
+            return a_t[0], a_t[1], False
         return 0, 0, False
 
 

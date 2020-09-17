@@ -109,11 +109,8 @@ class SAC(KerasPilot):
         self.alpha_optimizer = tf.keras.optimizers.Adam(self.lr)
 
     # Define actor_loss
-    def actor_loss():
-        #TODO: debug this part
-        # Create a loss function that adds the MSE loss to the mean of all squared activations of a specific layer
-        def loss(y_true, y_pred):
-            return K.mean(y_pred - y_true, axis=-1)
+    def actor_loss(self,y_true, y_pred):
+        loss = K.mean(y_pred - y_true, axis=-1)
 
         # Return a function
         return loss
