@@ -3,8 +3,8 @@
 Scripts to drive a donkey 2 car
 
 Usage:
-    manage.py (drive) [--model=<model>] [--js] [--type=(linear|categorical|rnn|imu|behavior|3d|localizer|latent)] [--camera=(single|stereo)] [--meta=<key:value> ...] [--myconfig=<filename>]
-    manage.py (train) [--tub=<tub1,tub2,..tubn>] [--file=<file> ...] (--model=<model>) [--transfer=<model>] [--type=(linear|categorical|rnn|imu|behavior|3d|localizer)] [--continuous] [--aug] [--myconfig=<filename>]
+    rl_driver.py (drive) [--model=<model>] [--js] [--type=(linear|categorical|rnn|imu|behavior|3d|localizer|latent)] [--camera=(single|stereo)] [--meta=<key:value> ...] [--myconfig=<filename>]
+    rl_driver.py (train) [--tub=<tub1,tub2,..tubn>] [--file=<file> ...] (--model=<model>) [--transfer=<model>] [--type=(linear|categorical|rnn|imu|behavior|3d|localizer)] [--continuous] [--aug] [--myconfig=<filename>] [--batch-size=<batch_size>]
 
 
 Options:
@@ -38,6 +38,8 @@ from donkeycar.utils import *
 from normalizer import LN
 from Keras_DDPG import DDPG
 from Keras_PPO import PPO
+from Keras_SAC import SAC
+from Keras_TD3 import TD3
 
 
 class RL_Driver():
@@ -53,7 +55,8 @@ class RL_Driver():
         self.model_dict = {
                 'DDPG': DDPG,
                 'PPO': PPO,
-#                'SAC': SAC,
+                'SAC': SAC,
+                'TD3': TD3,
                 }
 
         self.BATCH_SIZE = batch_size
@@ -383,7 +386,8 @@ if __name__ == '__main__':
         model = args['--model']
         model_type = args['--type']
         transfer = args['--transfer']
+        batch_size = int(args['--batch-size'])
 
-        rd = RL_Driver(cfg, model_path=model, model_type=model_type, batch_size=256)
+        rd = RL_Driver(cfg, model_path=model, model_type=model_type, batch_size=batch_size)
         rd.drive()
 

@@ -70,7 +70,7 @@ class DDPG(KerasPilot):
         K.set_session(self.sess)
         # Initialize for later gradient calculations
         self.sess.run(tf.initialize_all_variables())
-        self.memory= Memory(500000)
+        self.memory= Memory(50000)
 
         self.actor.summary()
         self.critic.summary()
@@ -240,32 +240,24 @@ def default_model(num_action, input_shape, actor_critic='actor'):
 
         # Perception
         x = Convolution2D(filters=24, kernel_size=(5, 5), strides=(2, 2), activation='relu')(img_in)
-        #x = BatchNormalization()(x)
         x = Convolution2D(filters=32, kernel_size=(5, 5), strides=(2, 2), activation='relu')(x)
-        #x = BatchNormalization()(x)
         x = Convolution2D(filters=64, kernel_size=(5, 5), strides=(2, 2), activation='relu')(x)
-        #x = BatchNormalization()(x)
         x = Convolution2D(filters=64, kernel_size=(3, 3), strides=(2, 2), activation='relu')(x)
-        #x = BatchNormalization()(x)
         x = Convolution2D(filters=64, kernel_size=(3, 3), strides=(1, 1), activation='relu')(x)
-        #x = BatchNormalization()(x)
         x = Flatten(name='flattened')(x)
         s_in = Input(shape=(1,), name='speed')
 
         # speed layer
         s = Dense(64)(s_in)
-        #s = BatchNormalization()(s)
         s = Dropout(0.5)(s)
         s = Activation('relu')(s)
         s = Dense(64)(s)
-        #s = BatchNormalization()(s)
         s = Dropout(0.5)(s)
         s = Activation('relu')(s)
 
         #action layer
         o = Concatenate(axis=1)([x, s])
         o = Dense(64)(o)
-        #o = BatchNormalization()(o)
         o = Dropout(0.5)(o)
         o = Activation('relu')(o)
         o = Dense(num_action)(o)
@@ -280,42 +272,32 @@ def default_model(num_action, input_shape, actor_critic='actor'):
     if actor_critic == 'critic':
         # Perception
         x = Convolution2D(filters=24, kernel_size=(5, 5), strides=(2, 2), activation='relu')(img_in)
-        x = BatchNormalization()(x)
         x = Convolution2D(filters=32, kernel_size=(5, 5), strides=(2, 2), activation='relu')(x)
-        x = BatchNormalization()(x)
         x = Convolution2D(filters=64, kernel_size=(5, 5), strides=(2, 2), activation='relu')(x)
-        x = BatchNormalization()(x)
         x = Convolution2D(filters=64, kernel_size=(3, 3), strides=(2, 2), activation='relu')(x)
-        x = BatchNormalization()(x)
         x = Convolution2D(filters=64, kernel_size=(3, 3), strides=(1, 1), activation='relu')(x)
-        x = BatchNormalization()(x)
         x = Flatten(name='flattened')(x)
         s_in = Input(shape=(1,), name='speed')
         a_in = Input(shape=(2,), name='actions')
 
         # speed layer
         s = Dense(64)(s_in)
-        s = BatchNormalization()(s)
         s = Dropout(0.5)(s)
         s = Activation('relu')(s)
         s = Dense(64)(s)
-        s = BatchNormalization()(s)
         s = Dropout(0.5)(s)
         s = Activation('relu')(s)
 
         # actions_layer
         a = Dense(64)(a_in)
-        a = BatchNormalization()(a)
         a = Dropout(0.5)(a)
         a = Activation('relu')(a)
         a = Dense(32)(a)
-        a = BatchNormalization()(a)
         a = Dropout(0.5)(a)
         a = Activation('relu')(a)
 
         o = Concatenate(axis=1)([x, s, a])
         o = Dense(64)(o)
-        o = BatchNormalization()(o)
         o = Dropout(0.5)(o)
         o = Activation('relu')(o)
         q = Dense(1)(o)
