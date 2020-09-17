@@ -105,8 +105,8 @@ class TD3(KerasPilot):
         pass
 
     def compile(self):
-        self.critic1.compile(optimizer=Adam(lr=self.lr), loss='mse')
-        self.critic2.compile(optimizer=Adam(lr=self.lr), loss='mse')
+        self.critic1.compile(optimizer=tf.train.AdamOptimizer(self.lr), loss='mse')
+        self.critic2.compile(optimizer=tf.train.AdamOptimizer(self.lr), loss='mse')
         self.actor.compile(loss="mse", optimizer=Adam(lr=self.lr))
 
     def train_critic(self, batches):
