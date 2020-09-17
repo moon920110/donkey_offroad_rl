@@ -277,7 +277,7 @@ def default_model(num_action, input_shape, actor_critic='actor'):
         o = Activation('relu')(o)
         o = Dense(num_action)(o)
         o = Activation('linear')(o)
-
+        o = Lambda(lambda x: 0.8*x)(o)
         model = Model(inputs=[img_in, s_in],
                       outputs=o)
 
