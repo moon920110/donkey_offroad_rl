@@ -34,7 +34,7 @@ class Memory:
 class TD3(KerasPilot):
     def __init__(self, num_action, input_shape=(120, 160, 3), batch_size=64, training=True, model_path=None, *args,
                  **kwargs):
-        super(DDPG, self).__init__(*args, **kwargs)
+        super(TD3, self).__init__(*args, **kwargs)
 
         self.actor_img, self.actor_speed, self.actor = default_model(num_action, input_shape, actor_critic='actor')
         _, _, self.actor_target = default_model(num_action, input_shape, actor_critic='actor')
@@ -64,7 +64,7 @@ class TD3(KerasPilot):
         self.policy_freq = 2
         self.total_it = 0
         # Initialize for later gradient calculations
-        self.memory = Memory(500000)
+        self.memory = Memory(5000)
 
         self.actor.summary()
         self.critic1.summary()
@@ -127,12 +127,12 @@ class TD3(KerasPilot):
         next_speeds = np.reshape(next_speeds, (-1, 1))
 
         noise = np.clip(np.random.randn(2) * self.policy_noise, -self.noise_clip, self.noise_clip)
-        target_actions = self.actor_target(next_imgs,next_speeds) + noise
+        target_actions = self.actor_target([next_imgs,next_speeds]) + noise
         target_actions = K.clip(target_actions,[-0.8,0],[0.8,1])
 
-        target_q1 = self.critic_target1.predict([next_imgs, next_speeds, target_actions])
-        target_q2 = self.critic_target2.predict([next_imgs, next_speeds, target_actions])
-        target_q = K.min(target_q1,target_q2)
+        target_q1 = self.critic_target1.predict([next_imgs, next_speeds, target_actions],steps=1)
+        target_q2 = self.critic_target2.predict([next_imgs, next_speeds, target_actions],steps=1)
+        target_q = K.minimum(target_q1,target_q2)
         rewards += self.gamma * target_q * (1 - dones)
         with tf.GradientTape() as tape:
             q1 = self.critic1([imgs,speeds,actions])
@@ -193,7 +193,7 @@ class TD3(KerasPilot):
         if train_state > 0:
             img = np.expand_dims(img, axis=0)
             reshaped_speed = np.reshape(speed, (1, 1))
-            actions = self.actor.predict([img, reshaped_speed])
+            actions = self.actor.predict([img, reshaped_speed])[0]
 
             if train_state < 4:
                 if self.train_step > 0:
@@ -224,7 +224,7 @@ class TD3(KerasPilot):
                     'img': img,
                     'speed': speed,
                 }
-                self.last_actions = a_t
+                self.last_actions = actions
                 self.train_step += 1
 
             elif train_state == 4:
