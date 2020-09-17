@@ -107,7 +107,7 @@ class TD3(KerasPilot):
     def compile(self):
         self.critic1.compile(optimizer=tf.train.AdamOptimizer(self.lr), loss='mse')
         self.critic2.compile(optimizer=tf.train.AdamOptimizer(self.lr), loss='mse')
-        self.actor.compile(loss="mse", optimizer=Adam(lr=self.lr))
+        self.actor.compile(loss="mse", optimizer=tf.train.AdamOptimizer(lr=self.lr))
 
     def train_critic(self, batches):
         batches = np.array(batches).transpose()
