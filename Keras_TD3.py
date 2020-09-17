@@ -107,7 +107,7 @@ class TD3(KerasPilot):
     def compile(self):
         self.critic1.compile(optimizer=tf.train.AdamOptimizer(self.lr), loss='mse')
         self.critic2.compile(optimizer=tf.train.AdamOptimizer(self.lr), loss='mse')
-        self.actor.compile(loss="mse", optimizer=tf.train.AdamOptimizer(lr=self.lr))
+        self.actor.compile(loss="mse", optimizer=tf.train.AdamOptimizer(self.lr))
 
     def train_critic(self, batches):
         batches = np.array(batches).transpose()
@@ -136,7 +136,7 @@ class TD3(KerasPilot):
         loss1 = tf.reduce_mean(tf.keras.losses.mean_squared_error(rewards, q1))
         loss2 = tf.reduce_mean(tf.keras.losses.mean_squared_error(rewards, q2))
         loss = loss1 + loss2
-        grads = tf.gradient(loss, self.critic1.trainable_weights + self.critic2.trainable_weights)
+        grads = tf.gradients(loss, self.critic1.trainable_weights + self.critic2.trainable_weights)
         self.critic1.optimizer.apply_gradients(
             zip(grads, self.critic1.trainable_weights + self.critic2.trainable_weights))
 
@@ -157,7 +157,7 @@ class TD3(KerasPilot):
         actions = tf.clip_by_value(actions, [-0.8,0],[0.8,1])
         q = self.critic1([state, actions])
         loss = -tf.reduce_mean(q)
-        grads = tf.gradient(loss, self.actor.trainable_weights)
+        grads = tf.gradients(loss, self.actor.trainable_weights)
         self.actor.optimizer.apply_gradients(zip(grads, self.actor.trainable_weights))
 
 

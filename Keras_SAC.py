@@ -1,6 +1,5 @@
-import tensorflow.compat.v1 as tf
+import tensorflow as tf
 
-tf.disable_v2_behavior()
 from tensorflow.python import keras
 from tensorflow.python.ops import clip_ops
 from tensorflow.python.framework import ops
@@ -14,13 +13,10 @@ from tensorflow.python.keras.layers import LSTM
 from tensorflow.python.keras.layers.wrappers import TimeDistributed as TD
 from tensorflow.python.keras.layers import Conv3D, MaxPooling3D, Cropping3D, Conv2DTranspose
 import numpy as np
-from tensorflow.python.keras.optimizers import Adam
-# from keras import KerasPilot
 from collections import deque
 import random
 from donkeycar.parts.keras import KerasPilot
 import tensorflow_probability as tfp
-tfd = tfp.distributions
 
 class Memory:
     def __init__(self, capacity):
@@ -46,26 +42,31 @@ class SAC(KerasPilot):
         self.throttle_scale = ops.convert_to_tensor((throttle_range[1] - throttle_range[0]) / 2)
         self.throttle_bias = ops.convert_to_tensor((throttle_range[1] + throttle_range[0]) / 2)
 
-        self.actor_img, self.actor_speed, self.actor = default_model(num_action, input_shape, actor_critic='actor')
-        _, _, self.actor_target = default_model(num_action, input_shape, actor_critic='actor')
-        self.critic_img1, self.critic_speed1,self.critic_action1, self.critic1 = default_model(num_action, input_shape,actor_critic='critic')
-        self.critic_img2, self.critic_speed2,self.critic_action2, self.critic2 = default_model(num_action, input_shape, actor_critic='critic')
-        _, _, _, self.critic_target1 = default_model(num_action, input_shape, actor_critic='critic')
-        _, _, _, self.critic_target2 = default_model(num_action, input_shape, actor_critic='critic')
+        self.actor = default_model(num_action, input_shape, actor_critic='actor')
+        self.actor_target = default_model(num_action, input_shape, actor_critic='actor')
+        self.critic1 = default_model(num_action, input_shape,actor_critic='critic')
+        self.critic2 = default_model(num_action, input_shape, actor_critic='critic')
+        self.critic_target1 = default_model(num_action, input_shape, actor_critic='critic')
+        self.critic_target2 = default_model(num_action, input_shape, actor_critic='critic')
 
+        self.model_path = model_path
         self.batch_size = batch_size
-        self.alpha = tf.Variable(0.0, dtype=tf.float64)
-        self.target_entropy = -tf.constant(2, dtype=tf.float64)
+        self.alpha = tf.Variable(0.0, dtype=tf.float32)
+        self.target_entropy = -tf.constant(2, dtype=tf.float32)
         self.n = 0
-        self.gamma = 0.99
         self.lr = 1e-4
+        self.gamma = 0.99
+        self.tau = 1e-3
         self.memory = Memory(50000)
         self.train_step = 0
         self.last_state = None
         self.last_actions = None
 
         if training:
-            self.compile()
+            self.critic1_optimizer = tf.keras.optimizers.Adam(self.lr)
+            self.critic2_optimizer = tf.keras.optimizers.Adam(self.lr)
+            self.actor_optimizer = tf.keras.optimizers.Adam(self.lr)
+            self.alpha_optimizer = tf.keras.optimizers.Adam(self.lr)
 
     def save(self):
         self.actor.save('{}_actor.h5'.format(self.model_path))
@@ -103,17 +104,7 @@ class SAC(KerasPilot):
         pass
 
     def compile(self):
-        self.critic1.compile(optimizer=Adam(lr=self.lr), loss='mse')
-        self.critic2.compile(optimizer=Adam(lr=self.lr), loss='mse')
-        self.actor.compile(loss=self.actor_loss, optimizer=Adam(lr=self.lr))
-        self.alpha_optimizer = tf.keras.optimizers.Adam(self.lr)
-
-    # Define actor_loss
-    def actor_loss(self,y_true, y_pred):
-        loss = K.mean(y_pred - y_true, axis=-1)
-
-        # Return a function
-        return loss
+        pass
 
     def train_critic(self, batches):
         batches = np.array(batches).transpose()
@@ -129,17 +120,26 @@ class SAC(KerasPilot):
         speeds = np.reshape(speeds, (-1, 1))
         next_speeds = np.reshape(next_speeds, (-1, 1))
 
+        # critic1 update
         q1 = self.critic1([imgs, speeds, actions])
         q2 = self.critic2([imgs, speeds, actions])
-        pi, log_pi = self.actor.predict([imgs, speeds])
-        tq1 = self.critic_target1.predict([next_imgs, log_pi])
-        tq2 = self.critic_target2.predict([next_imgs, log_pi])
+
+        pi, log_pi = self.actor.predict([next_imgs, next_speeds])
+
+        tq1 = self.critic_target1.predict([next_imgs, next_speeds, pi])
+        tq2 = self.critic_target2.predict([next_imgs, next_speeds, pi])
+
         tq = tf.minimum(tq1, tq2)
         soft_tq = tq - self.alpha * log_pi
         y = tf.stop_gradient(rewards + self.gamma * dones * soft_tq)
 
-        self.critic1.fit(q1,y)
-        self.critic2.fit(q2,y)
+        critic1_loss = tf.reduce_mean((q1 - y) ** 2)
+        critic2_loss = tf.reduce_mean((q2 - y) ** 2)
+
+        grads1 = tf.gradients(critic1_loss, self.critic1.trainable_variables)
+        grads2 = tf.gradients(critic2_loss, self.critic2.trainable_variables)
+        self.critic1_optimizer.apply_gradients(zip(grads1, self.critic1.trainable_variables))
+        self.critic1_optimizer.apply_gradients(zip(grads2, self.critic2.trainable_variables))
 
     def train_actor(self, batches):
         batches = np.array(batches).transpose()
@@ -153,11 +153,20 @@ class SAC(KerasPilot):
 
         speeds = np.reshape(speeds, (-1, 1))
         next_speeds = np.reshape(next_speeds, (-1, 1))
-        pi,log_pi = self.actor.predict([imgs,speeds])
+
+        pi, log_pi = self.actor([imgs, speeds])
+
         q1 = self.critic1.predict([imgs, speeds, actions])
         q2 = self.critic2.predict([imgs, speeds, actions])
-        tq = tf.minimum(tq1, tq2)
-        self.actor.fit(tq,self.alpha * log_pi) # tq - self.alpha * log_pi?
+        tq = tf.minimum(q1, q2)
+
+        soft_q = tq - self.alpha * log_pi
+
+        actor_loss = -tf.reduce_mean(soft_q)
+
+        variables = self.actor.trainable_variables
+        grads = tf.gradients(actor_loss, variables)
+        self.actor_optimizer.apply_gradients(zip(grads, variables))
 
     def update_alpha(self, batches):
         batches = np.array(batches).transpose()
@@ -168,14 +177,14 @@ class SAC(KerasPilot):
         next_imgs = np.vstack(batches[4])
         next_speeds = np.vstack(batches[5])
         dones = np.vstack(batches[6].astype(int))
-        with tf.GradientTape() as tape:
-            # Sample actions from the policy for current states
-            pi, log_pi = self.actor([imgs,speeds])
 
-            alpha_loss = tf.reduce_mean( - self.alpha*(log_pi + self.target_entropy))
+        # Sample actions from the policy for current states
+        pi, log_pi = self.actor([imgs, speeds])
+        alpha_loss = tf.reduce_mean(-self.alpha * (log_pi + self.target_entropy))
 
         variables = [self.alpha]
-        grads = tape.gradient(alpha_loss, variables)
+        grads = tf.gradients(alpha_loss, variables)
+
         self.alpha_optimizer.apply_gradients(zip(grads, variables))
 
     def train(self):
@@ -300,7 +309,7 @@ def default_model(num_action, input_shape, actor_critic='actor'):
 
         # action, action_matrix, prediction from trial_run
         # reward is a function( angle, throttle)
-        return img_in, s_in, model
+        return model
 
     if actor_critic == 'critic':
         # Perception
@@ -336,4 +345,4 @@ def default_model(num_action, input_shape, actor_critic='actor'):
         q = Dense(1)(o)
         model = Model(inputs=[img_in, s_in, a_in], outputs=q)
 
-        return img_in, s_in, a_in, model
+        return model
