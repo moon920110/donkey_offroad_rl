@@ -42,12 +42,10 @@ class TD3(KerasPilot):
                                                                                                 actor_critic='critic')
         self.critic_img2, self.critic_speed2, self.critic_action2, self.critic2 = default_model(num_action, input_shape,
                                                                                                 actor_critic='critic')
-        _, _, self.critic_target1 = default_model(num_action, input_shape, actor_critic='critic')
-        _, _, self.critic_target2 = default_model(num_action, input_shape, actor_critic='critic')
+        _, _,_, self.critic_target1 = default_model(num_action, input_shape, actor_critic='critic')
+        _, _,_, self.critic_target2 = default_model(num_action, input_shape, actor_critic='critic')
 
         self.lr = 0.002
-        self.critic_optimizer = tf.keras.optimizers.Adam(lr=self.lr)
-        self.actor_optimizer = tf.keras.optimizers.Adam(lr=self.lr)
 
         self.n = 0
         self.model_path = model_path
@@ -65,7 +63,6 @@ class TD3(KerasPilot):
         self.total_it = 0
         # Initialize for later gradient calculations
         self.memory = Memory(5000)
-
         self.actor.summary()
         self.critic1.summary()
         self.critic2.summary()
@@ -134,13 +131,12 @@ class TD3(KerasPilot):
         target_q2 = self.critic_target2.predict([next_imgs, next_speeds, target_actions],steps=1)
         target_q = K.minimum(target_q1,target_q2)
         rewards += self.gamma * target_q * (1 - dones)
-        with tf.GradientTape() as tape:
-            q1 = self.critic1([imgs,speeds,actions])
-            q2 = self.critic2([imgs, speeds, actions])
-            loss1 = tf.reduce_mean(tf.keras.losses.mean_squared_error(rewards, q1))
-            loss2 = tf.reduce_mean(tf.keras.losses.mean_squared_error(rewards, q2))
-            loss = loss1 + loss2
-        grads = tape.gradient(loss, self.critic1.trainable_weights + self.critic2.trainable_weights)
+        q1 = self.critic1([imgs,speeds,actions])
+        q2 = self.critic2([imgs, speeds, actions])
+        loss1 = tf.reduce_mean(tf.keras.losses.mean_squared_error(rewards, q1))
+        loss2 = tf.reduce_mean(tf.keras.losses.mean_squared_error(rewards, q2))
+        loss = loss1 + loss2
+        grads = tf.gradient(loss, self.critic1.trainable_weights + self.critic2.trainable_weights)
         self.critic1.optimizer.apply_gradients(
             zip(grads, self.critic1.trainable_weights + self.critic2.trainable_weights))
 
@@ -157,19 +153,22 @@ class TD3(KerasPilot):
         speeds = np.reshape(speeds, (-1, 1))
         next_speeds = np.reshape(next_speeds, (-1, 1))
 
-        with tf.GradientTape() as tape:
-            actions = self.actor([imgs,speeds])
-            actions = tf.clip_by_value(actions, [-0.8,0],[0.8,1])
-            q = self.critic1([state, actions])
-            loss = -tf.reduce_mean(q)
-        grads = tape.gradient(loss, self.actor.trainable_weights)
+        actions = self.actor([imgs,speeds])
+        actions = tf.clip_by_value(actions, [-0.8,0],[0.8,1])
+        q = self.critic1([state, actions])
+        loss = -tf.reduce_mean(q)
+        grads = tf.gradient(loss, self.actor.trainable_weights)
         self.actor.optimizer.apply_gradients(zip(grads, self.actor.trainable_weights))
 
 
     def train(self):
+        self.total_it += 1
         batches = self.memory.sample(batch_size=self.batch_size)
         self.train_critic(batches)
-        self.train_actor(batches)
+
+        # Delayed policy updates
+        if self.total_it % self.policy_freq == 0:
+            self.train_actor(batches)
 
         a_w, a_t_w = self.actor.get_weights(), self.actor_target.get_weights()
 
@@ -236,7 +235,7 @@ class TD3(KerasPilot):
                     print("SAVE DONE!")
                 return 0, 0, False
 
-            return a_t[0], a_t[1], False
+            return actions[0], actions[1], False
         return 0, 0, False
 
 
