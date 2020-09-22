@@ -43,13 +43,14 @@ from Keras_TD3 import TD3
 
 
 class RL_Driver():
-    def __init__(self, cfg, model_path=None, model_type='DDPG', meta=[], training=True, batch_size=64):
+    def __init__(self, cfg, model_path=None, model_type='DDPG', meta=[], training=True, batch_size=64, transfer=None):
         # init car
         self.V = dk.vehicle.Vehicle()
 
         self.cfg = cfg
         self.model_path = model_path
         self.model_type = model_type
+        self.weight_path = transfer
         self.meta = meta
         self.training = training
         self.model_dict = {
@@ -269,7 +270,7 @@ class RL_Driver():
             start = time.time()
             try:
                 print('loading model weights', weights_path)
-                kl.model.load_weights(weights_path)
+                kl.actor.load_weights(weights_path)
                 print('finished loading in %s sec.' % (str(time.time() - start)) )
             except Exception as e:
                 print(e)
@@ -277,6 +278,10 @@ class RL_Driver():
 
         # Set the rl network
         kl = self.model_dict[self.model_type](num_action=2, input_shape=(120, 160, 3), batch_size=self.BATCH_SIZE, model_path = self.model_path)
+
+        if self.weight_path:
+            load_weights(kl, self.weight_path)
+
         if not self.training:
             model_reload_cb = None
             if '.h5' in self.model_path or '.uff' in self.model_path or 'tflite' in self.model_path or '.pkl' in self.model_path:
@@ -388,6 +393,7 @@ if __name__ == '__main__':
         transfer = args['--transfer']
         batch_size = int(args['--batch-size'])
 
-        rd = RL_Driver(cfg, model_path=model, model_type=model_type, batch_size=batch_size)
+
+        rd = RL_Driver(cfg, model_path=model, model_type=model_type, batch_size=batch_size, transfer=transfer)
         rd.drive()
 
