@@ -133,9 +133,11 @@ class TD3(KerasPilot):
         rewards += self.gamma * target_q * (1 - dones)
         q1 = self.critic1([imgs, speeds, actions])
         q2 = self.critic2([imgs, speeds, actions])
-        loss1 = tf.reduce_mean(tf.keras.losses.mean_squared_error(rewards, q1))
-        loss2 = tf.reduce_mean(tf.keras.losses.mean_squared_error(rewards, q2))
-        loss = loss1 + loss2
+        with tf.name_scope('critic_loss'):
+            loss1 = tf.reduce_mean(tf.keras.losses.mean_squared_error(rewards, q1))
+            loss2 = tf.reduce_mean(tf.keras.losses.mean_squared_error(rewards, q2))
+            loss = loss1 + loss2
+            closs_scalar = tf.compat.v1.summary.scalar('critic_loss', loss)
         grads = tf.gradients(loss, self.critic1.trainable_weights + self.critic2.trainable_weights)
         self.critic1.optimizer.apply_gradients(
             zip(grads, self.critic1.trainable_weights + self.critic2.trainable_weights))
@@ -156,7 +158,9 @@ class TD3(KerasPilot):
         actions = self.actor([imgs, speeds])
         actions = tf.clip_by_value(actions, [-0.8,0],[0.8,1])
         q = self.critic1([imgs, speeds, actions])
-        loss = -tf.reduce_mean(q)
+        with tf.name_scope('actor_loss'):
+            loss = -tf.reduce_mean(q)
+            aloss_scalar = tf.compat.v1.summary.scalar('actor_loss',loss)
         grads = tf.gradients(loss, self.actor.trainable_weights)
         self.actor.optimizer.apply_gradients(zip(grads, self.actor.trainable_weights))
 
@@ -268,7 +272,12 @@ def default_model(num_action, input_shape, actor_critic='actor'):
         o = Dropout(0.5)(o)
         o = Activation('relu')(o)
         o = Dense(num_action)(o)
+<<<<<<< HEAD
         o = Lambda(lambda x: 0.8 * x)(o)
+=======
+        o = Activation('linear')(o)
+        o = Lambda(lambda x: )(o)
+>>>>>>> fdcfa18f3984fa3858401502bba89b30c5c67e50
         model = Model(inputs=[img_in, s_in],
                       outputs=o)
 
