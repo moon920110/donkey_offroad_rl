@@ -132,10 +132,12 @@ class SAC(KerasPilot):
         tq = tf.minimum(tq1, tq2)
         soft_tq = tq - self.alpha * log_pi
         y = tf.stop_gradient(rewards + self.gamma * dones * soft_tq)
-
-        critic1_loss = tf.reduce_mean((q1 - y) ** 2)
-        critic2_loss = tf.reduce_mean((q2 - y) ** 2)
-
+        with tf.name_scope('critic1_loss'):
+            critic1_loss = tf.reduce_mean((q1 - y) ** 2)
+            c1loss_scalar = tf.compat.v1.summary.scalar('critic1_loss', critic1_loss)
+        with tf.name_scope('critic2_loss'):
+            critic2_loss = tf.reduce_mean((q2 - y) ** 2)
+            c2loss_scalar = tf.compat.v1.summary.scalar('critic2_loss', critic2_loss)
         grads1 = tf.gradients(critic1_loss, self.critic1.trainable_variables)
         grads2 = tf.gradients(critic2_loss, self.critic2.trainable_variables)
         self.critic1_optimizer.apply_gradients(zip(grads1, self.critic1.trainable_variables))
@@ -161,9 +163,9 @@ class SAC(KerasPilot):
         tq = tf.minimum(q1, q2)
 
         soft_q = tq - self.alpha * log_pi
-
-        actor_loss = -tf.reduce_mean(soft_q)
-
+        with tf.name_scope('actor_loss'):
+            actor_loss = -tf.reduce_mean(soft_q)
+            aloss_scalar = tf.compat.v1.summary.scalar('actor_loss',actor_loss)
         variables = self.actor.trainable_variables
         grads = tf.gradients(actor_loss, variables)
         self.actor_optimizer.apply_gradients(zip(grads, variables))

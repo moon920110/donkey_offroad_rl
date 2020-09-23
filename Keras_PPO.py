@@ -216,12 +216,15 @@ class PPO(KerasPilot):
 
         # calc old_prediction. Required for actor loss.
         batch_old_prediction = self.get_old_prediction(imgs, speeds)
-
+        actor_hist = keras.callbacks.TensorBoard(log_dir='./logs', histogram_freq=0, write_graph=True, write_images=True)
+        critic_hist = keras.callbacks.TensorBoard(log_dir='./logs', histogram_freq=0, write_graph=True,
+                                                 write_images=True)
         # commit training
         self.actor.fit(
-            x=[imgs, speeds, gae_advantages, batch_old_prediction], y=actions, verbose=0)
+            x=[imgs, speeds, gae_advantages, batch_old_prediction], y=actions, verbose=0,callbacks=[actor_hist])
         self.critic.fit(
-            x=[imgs, speeds], y=rewards, epochs=1, verbose=0)
+            x=[imgs, speeds], y=rewards, epochs=1, verbose=0,callbacks=[critic_hist])
+
         # update old network
         alpha = 0.9
         actor_weights = np.array(self.actor.get_weights())
