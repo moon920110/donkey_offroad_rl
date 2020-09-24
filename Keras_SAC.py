@@ -298,7 +298,7 @@ def default_model(num_action, input_shape, actor_critic='actor'):
         mu = Activation('tanh')(mu)
         std = Dense(num_action)(o)
         std = Activation('tanh')(std)
-        log_std = Lambda(lambda x: clip_ops.clip_by_value(x, 20, 2))(std)
+        log_std = Lambda(lambda x: clip_ops.clip_by_value(x, -20, 2))(std)
 
         std = tf.exp(log_std)
         dist = tfp.distributions.Normal(mu, std)

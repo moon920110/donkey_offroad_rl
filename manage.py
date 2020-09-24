@@ -379,6 +379,8 @@ def drive(cfg, model_path=None, use_joystick=False, model_type=None, camera_type
         inputs=[inf_input,
             'imu/acl_x', 'imu/acl_y', 'imu/acl_z',
             'imu/gyr_x', 'imu/gyr_y', 'imu/gyr_z']
+    elif model_type == 'il':
+        inputs=[inf_input, 'rotaryencoder/meter_per_second']
     else:
         inputs=[inf_input]
 

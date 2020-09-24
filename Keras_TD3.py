@@ -124,14 +124,14 @@ class TD3(KerasPilot):
         next_speeds = np.reshape(next_speeds, (-1, 1))
 
         noise = np.clip(np.random.randn(2) * self.policy_noise, -self.noise_clip, self.noise_clip)
-        target_actions = self.actor_target([next_imgs,next_speeds]) + noise
-        target_actions = K.clip(target_actions,[-0.8,0],[0.8,1])
+        target_actions = self.actor_target([next_imgs, next_speeds]) + noise
+        target_actions = K.clip(target_actions,[-0.8,0], [0.8,1])
 
-        target_q1 = self.critic_target1.predict([next_imgs, next_speeds, target_actions],steps=1)
-        target_q2 = self.critic_target2.predict([next_imgs, next_speeds, target_actions],steps=1)
+        target_q1 = self.critic_target1.predict([next_imgs, next_speeds, target_actions], steps=1)
+        target_q2 = self.critic_target2.predict([next_imgs, next_speeds, target_actions], steps=1)
         target_q = K.minimum(target_q1,target_q2)
         rewards += self.gamma * target_q * (1 - dones)
-        q1 = self.critic1([imgs,speeds,actions])
+        q1 = self.critic1([imgs, speeds, actions])
         q2 = self.critic2([imgs, speeds, actions])
         with tf.name_scope('critic_loss'):
             loss1 = tf.reduce_mean(tf.keras.losses.mean_squared_error(rewards, q1))
@@ -155,9 +155,9 @@ class TD3(KerasPilot):
         speeds = np.reshape(speeds, (-1, 1))
         next_speeds = np.reshape(next_speeds, (-1, 1))
 
-        actions = self.actor([imgs,speeds])
+        actions = self.actor([imgs, speeds])
         actions = tf.clip_by_value(actions, [-0.8,0],[0.8,1])
-        q = self.critic1([state, actions])
+        q = self.critic1([imgs, speeds, actions])
         with tf.name_scope('actor_loss'):
             loss = -tf.reduce_mean(q)
             aloss_scalar = tf.compat.v1.summary.scalar('actor_loss',loss)
@@ -251,37 +251,28 @@ def default_model(num_action, input_shape, actor_critic='actor'):
     if actor_critic == "actor":
         # Perception
         x = Convolution2D(filters=24, kernel_size=(5, 5), strides=(2, 2), activation='relu')(img_in)
-        x = BatchNormalization()(x)
         x = Convolution2D(filters=32, kernel_size=(5, 5), strides=(2, 2), activation='relu')(x)
-        x = BatchNormalization()(x)
         x = Convolution2D(filters=64, kernel_size=(5, 5), strides=(2, 2), activation='relu')(x)
-        x = BatchNormalization()(x)
         x = Convolution2D(filters=64, kernel_size=(3, 3), strides=(2, 2), activation='relu')(x)
-        x = BatchNormalization()(x)
         x = Convolution2D(filters=64, kernel_size=(3, 3), strides=(1, 1), activation='relu')(x)
-        x = BatchNormalization()(x)
         x = Flatten(name='flattened')(x)
         s_in = Input(shape=(1,), name='speed')
 
         # speed layer
         s = Dense(64)(s_in)
-        s = BatchNormalization()(s)
         s = Dropout(0.5)(s)
         s = Activation('relu')(s)
         s = Dense(64)(s)
-        s = BatchNormalization()(s)
         s = Dropout(0.5)(s)
         s = Activation('relu')(s)
 
         # action layer
         o = Concatenate(axis=1)([x, s])
         o = Dense(64)(o)
-        o = BatchNormalization()(o)
         o = Dropout(0.5)(o)
         o = Activation('relu')(o)
         o = Dense(num_action)(o)
-        o = Activation('linear')(o)
-        o = Lambda(lambda x: )(o)
+        o = Lambda(lambda x: 0.8 * x)(o)
         model = Model(inputs=[img_in, s_in],
                       outputs=o)
 
@@ -292,42 +283,32 @@ def default_model(num_action, input_shape, actor_critic='actor'):
     if actor_critic == 'critic':
         # Perception
         x = Convolution2D(filters=24, kernel_size=(5, 5), strides=(2, 2), activation='relu')(img_in)
-        x = BatchNormalization()(x)
         x = Convolution2D(filters=32, kernel_size=(5, 5), strides=(2, 2), activation='relu')(x)
-        x = BatchNormalization()(x)
         x = Convolution2D(filters=64, kernel_size=(5, 5), strides=(2, 2), activation='relu')(x)
-        x = BatchNormalization()(x)
         x = Convolution2D(filters=64, kernel_size=(3, 3), strides=(2, 2), activation='relu')(x)
-        x = BatchNormalization()(x)
         x = Convolution2D(filters=64, kernel_size=(3, 3), strides=(1, 1), activation='relu')(x)
-        x = BatchNormalization()(x)
         x = Flatten(name='flattened')(x)
         s_in = Input(shape=(1,), name='speed')
         a_in = Input(shape=(2,), name='actions')
 
         # speed layer
         s = Dense(64)(s_in)
-        s = BatchNormalization()(s)
         s = Dropout(0.5)(s)
         s = Activation('relu')(s)
         s = Dense(64)(s)
-        s = BatchNormalization()(s)
         s = Dropout(0.5)(s)
         s = Activation('relu')(s)
 
         # actions_layer
         a = Dense(64)(a_in)
-        a = BatchNormalization()(a)
         a = Dropout(0.5)(a)
         a = Activation('relu')(a)
         a = Dense(32)(a)
-        a = BatchNormalization()(a)
         a = Dropout(0.5)(a)
         a = Activation('relu')(a)
 
         o = Concatenate(axis=1)([x, s, a])
         o = Dense(64)(o)
-        o = BatchNormalization()(o)
         o = Dropout(0.5)(o)
         o = Activation('relu')(o)
         q = Dense(1)(o)
