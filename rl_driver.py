@@ -36,7 +36,7 @@ from donkeycar.parts.controller import get_js_controller
 from donkeycar.parts.encoder import RotaryEncoder
 from donkeycar.utils import *
 from normalizer import LN
-from Keras_DDPG import DDPG
+from Torch_DDPG import DDPGAgent as DDPG
 from Keras_PPO import PPO
 from Keras_SAC import SAC
 from Keras_TD3 import TD3
