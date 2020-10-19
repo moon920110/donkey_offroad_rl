@@ -262,7 +262,7 @@ def default_model(num_action, input_shape, actor_critic='actor'):
         o = Activation('relu')(o)
         o = Dense(num_action)(o)
 
-        model = Model(inputs=[img_in, s_in],
+        model = Model(inp`  uts=[img_in, s_in],
                       outputs=o)
         
         # action, action_matrix, prediction from trial_run
