@@ -33,12 +33,13 @@ from docopt import docopt
 import numpy as np
 from PIL import Image
 from shutil import copyfile
+from torch.utils.data import Dataset
+from torch.utils.data import DataLoader
+import torchvision.transforms as transforms
 
 import donkeycar as dk
 from donkeycar.parts.datastore import Tub
-from donkeycar.parts.keras import KerasLinear, KerasIMU,\
-     KerasCategorical, KerasBehavioral, Keras3D_CNN,\
-     KerasRNN_LSTM, KerasLatent, KerasLocalizer, KerasIL
+from donkeycar.parts.torch import TorchIL
 from donkeycar.parts.augment import augment_image
 from donkeycar.utils import *
 from normalizer import LN
@@ -57,6 +58,11 @@ except:
     do_plot = False
     print("matplotlib not installed")
     
+
+class TubDataset(Dataset):
+    def __init__(self, gen_records, transform=transform):
+        self.gen_records = gen_records
+
 
 '''
 Tub management
@@ -234,59 +240,6 @@ class MyCPCallback(keras.callbacks.ModelCheckpoint):
             self.reset_best_end_of_epoch = False
             self.best = np.Inf
         
-
-def on_best_model(cfg, model, model_filename):
-
-    on_windows = os.name == 'nt'
-
-    # If we wish, send the best model to the pi.
-    # On mac or linux we have scp:
-    if not on_windows:
-        print('sending model to the pi')
-        
-        command = 'scp %s %s@%s:~/%s/models/;' % (model_filename, cfg.PI_USERNAME, cfg.PI_HOSTNAME, cfg.PI_DONKEY_ROOT)
-    
-        print("sending", command)
-        res = os.system(command)
-        print(res)
-
-    else: #yes, we are on windows machine
-
-        #On windoz no scp. In order to use this you must first setup
-        #an ftp daemon on the pi. ie. sudo apt-get install vsftpd
-        #and then make sure you enable write permissions in the conf
-        try:
-            import paramiko
-        except:
-            raise Exception("first install paramiko: pip install paramiko")
-
-        host = cfg.PI_HOSTNAME
-        username = cfg.PI_USERNAME
-        password = cfg.PI_PASSWD
-        server = host
-        files = []
-
-        localpath = model_filename
-        remotepath = '/home/%s/%s/%s' %(username, cfg.PI_DONKEY_ROOT, model_filename.replace('\\', '/'))
-        files.append((localpath, remotepath))
-
-        print("sending", files)
-
-        try:
-            ssh = paramiko.SSHClient()
-            ssh.set_missing_host_key_policy(paramiko.AutoAddPolicy())
-            ssh.load_host_keys(os.path.expanduser(os.path.join("~", ".ssh", "known_hosts")))
-            ssh.connect(server, username=username, password=password)
-            sftp = ssh.open_sftp()
-        
-            for localpath, remotepath in files:
-                sftp.put(localpath, remotepath)
-
-            sftp.close()
-            ssh.close()
-            print("send succeded")
-        except:
-            print("send failed")
     
 
 def train(cfg, tub_names, model_name, transfer_model, model_type, continuous, aug):
@@ -298,24 +251,6 @@ def train(cfg, tub_names, model_name, transfer_model, model_type, continuous, au
 
     if model_type is None:
         model_type = cfg.DEFAULT_MODEL_TYPE
-
-    if "tflite" in model_type:
-        #even though we are passed the .tflite output file, we train with an intermediate .h5
-        #output and then convert to final .tflite at the end.
-        assert(".tflite" in model_name)
-        #we only support the linear model type right now for tflite
-        assert("linear" in model_type)
-        model_name = model_name.replace(".tflite", ".h5")
-    elif "tensorrt" in model_type:
-        #even though we are passed the .uff output file, we train with an intermediate .h5
-        #output and then convert to final .uff at the end.
-        assert(".uff" in model_name)
-        #we only support the linear model type right now for tensorrt
-        assert("linear" in model_type)
-        model_name = model_name.replace(".uff", ".h5")
-
-    if model_name and not '.h5' == model_name[-3:]:
-        raise Exception("Model filename should end with .h5")
     
     if continuous:
         print("continuous training")
@@ -330,10 +265,9 @@ def train(cfg, tub_names, model_name, transfer_model, model_type, continuous, au
 
     kl = get_model_by_type(train_type, cfg=cfg)
 
-    opts['categorical'] = type(kl) in [KerasCategorical, KerasBehavioral]
-
     print('training with model type', type(kl))
 
+    # Do not use
     if transfer_model:
         print('loading weights from model', transfer_model)
         kl.load(transfer_model)
@@ -347,182 +281,25 @@ def train(cfg, tub_names, model_name, transfer_model, model_type, continuous, au
 
     if cfg.OPTIMIZER:
         kl.set_optimizer(cfg.OPTIMIZER, cfg.LEARNING_RATE, cfg.LEARNING_RATE_DECAY)
-
-    kl.compile()
-
-    if cfg.PRINT_MODEL_SUMMARY:
-        print(kl.model.summary())
     
-    opts['keras_pilot'] = kl
+    opts['torch_pilot'] = kl
     opts['continuous'] = continuous
     opts['model_type'] = model_type
 
+    # Do not use
     extract_data_from_pickles(cfg, tub_names)
 
     records = gather_records(cfg, tub_names, opts, verbose=True)
     print('collating %d records ...' % (len(records)))
     collate_records(records, gen_records, opts)
 
-    def generator(save_best, opts, data, batch_size, isTrainSet=True, min_records_to_train=1000, ln=None):
-        num_records = len(data)
+    # make data loader
 
-        while True:
 
-            if isTrainSet and opts['continuous']:
-                '''
-                When continuous training, we look for new records after each epoch.
-                This will add new records to the train and validation set.
-                '''
-                records = gather_records(cfg, tub_names, opts)
-                if len(records) > num_records:
-                    collate_records(records, gen_records, opts)
-                    new_num_rec = len(data)
-                    if new_num_rec > num_records:
-                        print('picked up', new_num_rec - num_records, 'new records!')
-                        num_records = new_num_rec 
-                        save_best.reset_best()
-                if num_records < min_records_to_train:
-                    print("not enough records to train. need %d, have %d. waiting..." % (min_records_to_train, num_records))
-                    time.sleep(10)
-                    continue
-
-            batch_data = []
-
-            keys = list(data.keys())
-
-            random.shuffle(keys)
-
-            kl = opts['keras_pilot']
-
-            if type(kl.model.output) is list:
-                model_out_shape = (2, 1)
-            else:
-                model_out_shape = kl.model.output.shape
-
-            if type(kl.model.input) is list:
-                model_in_shape = (2, 1)
-            else:    
-                model_in_shape = kl.model.input.shape
-
-            has_imu = type(kl) is KerasIMU
-            has_bvh = type(kl) is KerasBehavioral
-            img_out = type(kl) is KerasLatent
-            loc_out = type(kl) is KerasLocalizer
-            il_in = type(kl) is KerasIL
-            
-            for key in keys:
-
-                if not key in data:
-                    continue
-
-                _record = data[key]
-
-                if _record['train'] != isTrainSet:
-                    continue
-
-                if continuous:
-                    #in continuous mode we need to handle files getting deleted
-                    filename = _record['image_path']
-                    if not os.path.exists(filename):
-                        data.pop(key, None)
-                        continue
-
-                batch_data.append(_record)
-
-                if len(batch_data) == batch_size:
-                    inputs_img = []
-                    inputs_imu = []
-                    inputs_bvh = []
-                    inputs_speed = []
-                    angles = []
-                    throttles = []
-                    out_img = []
-                    out_loc = []
-                    out = []
-
-                    for record in batch_data:
-                        #get image data if we don't already have it
-                        if record['img_data'] is None:
-                            filename = record['image_path']
-                            
-                            img_arr = load_scaled_image_arr(filename, cfg)
-
-                            if img_arr is None:
-                                break
-                            
-                            if aug:
-                                img_arr = augment_image(img_arr)
-
-                            if ln is not None:
-                                img_arr = ln.normalize_lightness(img_arr)
-
-                            if cfg.CACHE_IMAGES:
-                                record['img_data'] = img_arr
-
-                        else:
-                            img_arr = record['img_data']
-                        
-                        if il_in:
-                            inputs_speed.append(record['rotaryencoder/meter_per_second'])
-                        
-                        if img_out:                            
-                            rz_img_arr = cv2.resize(img_arr, (127, 127)) / 255.0
-                            out_img.append(rz_img_arr[:,:,0].reshape((127, 127, 1)))
-
-                        if loc_out:
-                            out_loc.append(record['location'])
-                            
-                        if has_imu:
-                            inputs_imu.append(record['imu_array'])
-                        
-                        if has_bvh:
-                            inputs_bvh.append(record['behavior_arr'])
-
-                        inputs_img.append(img_arr)
-                        angles.append(record['angle'])
-                        throttles.append(record['throttle'])
-                        out.append([record['angle'], record['throttle']])
-
-                    if img_arr is None:
-                        continue
-
-                    img_arr = np.array(inputs_img).reshape(batch_size,\
-                        cfg.TARGET_H, cfg.TARGET_W, cfg.TARGET_D)
-
-                    if has_imu:
-                        X = [img_arr, np.array(inputs_imu)]
-                    elif has_bvh:
-                        X = [img_arr, np.array(inputs_bvh)]
-                    elif il_in:
-                        X = [img_arr, np.array(inputs_speed)]
-                    else:
-                        X = [img_arr]
-
-                    if img_out:
-                        y = [out_img, np.array(angles), np.array(throttles)]
-                    elif out_loc:
-                        y = [ np.array(angles), np.array(throttles), np.array(out_loc)]
-                    elif model_out_shape[1] == 2:
-                        y = [np.array([out]).reshape(batch_size, 2) ]
-                    else:
-                        y = [np.array(angles), np.array(throttles)]
-
-                    yield X, y
-
-                    batch_data = []
-    
     model_path = os.path.expanduser(model_name)
 
     # checkpoint to save model after each epoch and send best to the pi.
-    send_model_cb = on_best_model if cfg.SEND_BEST_MODEL_TO_PI else None
-    save_best = MyCPCallback(send_model_cb=send_model_cb,
-                             filepath=model_path,
-                             monitor='val_loss',
-                             verbose=verbose,
-                             save_best_only=True,
-                             mode='min',
-                             cfg=cfg)
-
+    
     ln = None
     if cfg.NORM_IMAGES_ILLUMINANCE:
         ln = LN(model_name, tub_names[0])

@@ -104,6 +104,8 @@ LEARNING_RATE = 0.001           #only used when OPTIMIZER specified
 LEARNING_RATE_DECAY = 0.0       #only used when OPTIMIZER specified
 NORM_IMAGES_ILLUMINANCE = False
 DEFAULT_REF_IMG = './data/reference.jpg'
+NORM_MEAN = [0.485, 0.456, 0.406]
+NORM_STD = [0.229, 0.224, 0.225]
 # SEND_BEST_MODEL_TO_PI = False   #change to true to automatically send best model during training
 # CACHE_IMAGES = True             #keep images in memory. will speed succesive epochs, but crater if not enough mem.
 # 
