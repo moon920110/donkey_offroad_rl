@@ -7,94 +7,104 @@ import random
 
 from collections import deque
 from baseagent import BaseAgent
+steering_values=[-0.3, -0.15, 0, 0.15, 0.3],
+throttle_values=[0, 0.25, 0.5, 0.75, 1]
 
+class Memory:
+    def __init__(self, batch_size, img_shape):
+        self.batch_size = batch_size
+        self.imgs = tr.zeros(batch_size+1,*img_shape)
+        self.speeds = tr.zeros(batch_size+1,1)
+        self.throttles = tr.zeros(batch_size,1)
+        self.steers = tr.zeros(batch_size,1)
+        self.rews = tr.zeros(batch_size,1)
+        self.vals = tr.zeros(batch_size+1,1)
+        self.rets = tr.zeros(batch_size+1,1)
+        self.steer_logprobs = tr.zeros(batch_size,1)
+        self.throttle_logprobs = tr.zeros(batch_size,1)
+        self.masks = tr.ones(batch_size+1, 1)
+        self.bad_masks = tr.ones(batch_size+1, 1)
+        self.step = 0
 
-class PPOMemory:
-    def __init__(self, img_dim, spd_dim, act_dim, size, gamma=0.99, lam=0.95):
-        def combined_shape(length, shape=None):
-            if shape is None:
-                return (length,)
-            return (length, shape) if np.isscalar(shape) else (length, *shape)
+    def save(self, img, speed, acts, rew, logprobs, v, mask, bad_mask):
+        self.imgs[self.step + 1].copy_(img)
+        self.speeds[self.step + 1].copy_(speed)
+        self.throttles[self.step].copy_(acts[1])
+        self.steers[self.step].copy_(acts[0])
+        self.rews[self.step].copy_(rew)
+        self.vals[self.step].copy_(v)
+        self.steer_logprobs[self.step].copy_(logprobs[0])
+        self.throttle_logprobs[self.step].copy_(logprobs[1])
+        self.masks[self.step + 1].copy_(mask)
+        self.bad_masks[self.step + 1].copy_(bad_mask)
+        self.step = (self.step + 1) % self.batch_size
 
-        self.img_buf = np.zeros(combined_shape(size, img_dim), dtype=np.float32)
-        self.spd_buf = np.zeros(combined_shape(size, spd_dim), dtype=np.float32)
-        self.act_buf = np.zeros(combined_shape(size, act_dim), dtype=np.float32)
-        self.rew_buf = np.zeros(size, dtype=np.float32)
-        self.val_buf = np.zeros(size, dtype=np.float32)
-        self.adv_buf = np.zeros(size, dtype=np.float32)
-        self.ret_buf = np.zeros(size, dtype=np.float32)
-        self.logp_buf = np.zeros(size, dtype=np.float32)
+    def after_train(self):
+        self.imgs[0].copy_(self.imgs[-1])
+        self.speeds[0].copy_(self.speeds[-1])
+        self.masks[0].copy_(self.masks[-1])
+        self.bad_masks[0].copy_(self.bad_masks[-1])
 
-        self.gamma, self.lam = gamma, lam
-        self.ptr, self.path_start_idx, self.max_size = 0, 0, size
-
-    def store(self, img, spd, act, rew, val, logp):
-        assert self.ptr < self.max_size
-        self.img_buf[self.ptr] = img
-        self.spd_buf[self.ptr] = spd
-        self.act_buf[self.ptr] = act
-        self.rew_buf[self.ptr] = rew
-        self.val_buf[self.ptr] = val
-        self.logp_buf[self.ptr] = logp
-        self.ptr += 1
-
-    def finish_path(self, last_val=0):
-        def discount_cumsum(self, x, discount):
-            return signal.lfilter([1], [1, float(-discount)], x[::-1], axis=0)[::-1]
-
-        path_slice = slice(self.path_start_idx, self.ptr)
-        rews = np.append(self.rew_buf[path_slice], last_val)
-        vals = np.append(self.val_buf[path_slice], last_val)
-
-        deltas = rews[:-1] + self.gamma * vals[1:] - vals[:-1]
-        self.adv_buf[path_slice] = discount_cumsum(deltas, self.gamma * self.lam)
-        self.ret_buf[path_slice] = discount_cumsum(rews, self.gamma)[:-1]
-        self.path_start_idx = self.ptr
-
-    def get_batch(self, batch_size):
-        pos_lst = np.random.randint(self.ptr, size=batch_size)
-        self.adv_buf = (self.adv_buf - self.adv_buf.mean()) / (self.adv_buf.std() + 1e-5)
-        return self.img_buf[pos_lst], self.spd_buf[pos_lst], self.act_buf[pos_lst], self.adv_buf[pos_lst], self.ret_buf[pos_lst], self.val_buf[pos_lst]
-
+    def compute_returns(self, next_val, use_gae, gamma, gae_lambda):
+        if use_gae:
+            self.vals[-1] = next_val
+            gae = 0
+            for step in reversed(range(self.rews.size(0))):
+                delta = self.rews[step] + gamma * self.vals[step + 1] * self.masks[step + 1] - self.vals[step]
+                gae = delta + gamma * gae_lambda * self.masks[step + 1] * gae
+                gae = gae * self.bad_masks[step + 1]
+                self.rets[step] = gae + self.vals[step]
+        else:
+            self.rets[-1] = next_val
+            for step in reversed(range(self.rews.size(0))):
+                self.rets[step] = (self.rets[step + 1] * gamma * self.masks[step + 1] + self.rets[step]) * \
+                                  self.bad_masks[step + 1] + (1 - self.bad_masks[step + 1]) * self.vals[step]
     def clear(self):
-        self.ptr, self.path_start_idx = 0, 0
+        self.imgs = tr.zeros(self.imgs)
+        self.speeds = tr.zeros(self.speeds)
+        self.throttles = tr.zeros(self.throttles)
+        self.steers = tr.zeros(self.steers)
+        self.rews = tr.zeros(self.rews)
+        self.vals = tr.zeros(self.vals)
+        self.rets = tr.zeros(self.rets)
+        self.steer_logprobs = tr.zeros(self.steer_logprobs)
+        self.throttle_logprobs = tr.zeros(self.throttle_logprobs)
+        self.masks = tr.ones(self.masks)
+        self.bad_masks = tr.ones(self.bad_masks)
+        self.step = 0
 
+    def sample(self):
+        batch = []
+        batch.append(self.imgs[:-1])
+        batch.append(self.speeds[:-1])
+        batch.append(tr.cat([self.steers,self.throttles],axis=-1))
+        batch.append(self.rets)
+        batch.append(tr.cat([self.steer_logprobs,self.throttle_logprobs],axis=-1))
+        batch.append(self.vals)
+        return batch
 
-def proximal_policy_optimization_loss_continuous(advantage, old_prediction):
-    def get_log_probability_density(pred, y):
-        mu_and_sigma = pred
-        mu = mu_and_sigma[:, :2]
-        sigma = mu_and_sigma[:, 2:]
-        variance = K.square(sigma)
-
-
-
-class DDPGAgent(BaseAgent):
-    def __init__(self, num_action, input_shape=(120, 160, 3), batch_size=64, training=True, model_path=None, *args,
-                 **kwargs):
-        super(DDPGAgent, self).__init__(*args, **kwargs)
-
+class PPOAgent(BaseAgent):
+    def __init__(self, num_action, input_shape=(120, 160, 3), batch_size=64, training=True, model_path=None, k=4,
+                 clip=0.2, use_clipped=True, entropy_coef=0.01, max_grad_norm=0.5, value_loss_coef=0.5, *args, **kwargs):
+        super(PPOAgent, self).__init__(*args, **kwargs)
+        self.steer = [-0.3, -0.15, 0, 0.15, 0.3]
+        self.throttle = [0, 0.25, 0.5, 0.75, 1]
         self.perception = Perception()
-        self.actor = Actor(num_action)
-        self.actor_target = Actor(num_action)
-        self.critic = Critic()
-        self.critic_target = Critic()
+        self.actor_critic = ActorCritic(num_action)
 
-        # update target model
-        self.actor_target.load_state_dict(self.actor.state_dict())
-        self.critic.load_state_dict(self.critic.state_dict())
+        # load model
+        self.actor_critic.load_state_dict(self.actor_critic.state_dict())
         self.tau = 1e-3
 
         # set optimizer
         self.lr = 0.001
         #self.decay = -5000
-        self.critic_optim = optim.Adam(self.critic.parameters(), lr=self.lr,)
-        self.actor_optim = optim.Adam(self.actor.parameters(), lr=self.lr,)
+        self.actor_critic_optim = optim.Adam(self.actor_critic.parameters(), lr=self.lr,)
         self.perc_optim = optim.Adam(self.perception.parameters(), lr=self.lr,)
 
         # common settings
         self.gamma = 0.99
-        self.memory = Memory(50000)
+        self.memory = Memory(batch_size=32)
         self.model_path = model_path
         self.n = 0
         self.train_step = 0
@@ -103,22 +113,54 @@ class DDPGAgent(BaseAgent):
         self.last_actions = None
         self.batch_size = batch_size
 
-        # about DDPG
-        self.ou = OU()
-        self.epsilon = 1
-        self.epsilon_decay = -5000
-
+        # about PPO
+        self.k = k
+        self.clip = clip
+        self.entropy_coef = entropy_coef
+        self.use_clipped = use_clipped
+        self.max_grad_norm = max_grad_norm
+        self.value_loss_coef = value_loss_coef
+        self.dist1 = Categorical(self.actor_critic.num_hidden, len(self.steer))
+        self.dist2 = Categorical(self.actor_critic.num_hidden, len(self.throttle))
     def save(self):
-        tr.save(self.actor.state_dict(),'{}_actor.h5'.format(self.model_path))
-        tr.save(self.actor_target.state_dict(), '{}_actor_target.h5'.format(self.model_path))
-        tr.save(self.critic.state_dict(), '{}_critic.h5'.format(self.model_path))
-        tr.save(self.critic_target.state_dict(), '{}_critic_target.h5'.format(self.model_path))
+        tr.save(self.actor_critic.state_dict(),'{}_actorcritic.h5'.format(self.model_path))
 
     def load(self,model_paths):
         self.actor = tr.load(model_paths[0])
         self.actor_target = tr.load(model_paths[1])
         self.critic = tr.load(model_paths[2])
         self.critic_target = tr.load(model_paths[3])
+    def _evaluate(self, imgs, scalars, actions):
+        processed = self.perception(imgs, scalars)
+        vs, hidden_actor = self.actor_critic(processed)
+        steer_dist = self.dist1(hidden_actor)
+        throttle_dist = self.dist2(hidden_actor)
+
+        # actions = [steer, throttle]
+        steer_logprobs = steer_dist.log_probs(actions[0])
+        throttle_logprobs = throttle_dist.log_probs(actions[1])
+        steer_dist_entropy = steer_dist.entropy().mean()
+        throttle_dist_entropy = throttle_dist.entropy().mean()
+        logprobs = [steer_logprobs, throttle_logprobs]
+        dist_entropy = [steer_dist_entropy, throttle_dist_entropy]
+        return vs, logprobs, dist_entropy
+
+    def _act(self, img, scalar, deterministic=False):
+        processed = self.perception(img, scalar)
+        v, hidden_actor = self.actor_critic(processed)
+        steer_dist = self.dist1(hidden_actor)
+        throttle_dist = self.dist2(hidden_actor)
+        if deterministic:
+            steer = steer_dist.mode()
+            throttle = throttle_dist.mode()
+        else:
+            steer = steer_dist.sample()
+            throttle = throttle_dist.sample()
+        steer_logprobs = steer_dist.log_probs(steer)
+        throttle_logprobs = throttle_dist.log_probs(throttle)
+        action = [steer, throttle]
+        logprobs = [steer_logprobs, throttle_logprobs]
+        return v, action, logprobs
 
     def train(self):
         # sample in Memory
@@ -127,49 +169,65 @@ class DDPGAgent(BaseAgent):
         imgs = np.vstack(batches[0])
         speeds = np.vstack(batches[1])
         actions = np.vstack(batches[2])
-        rewards = np.vstack(batches[3])
-        next_imgs = np.vstack(batches[4])
-        next_speeds = np.vstack(batches[5])
-        dones = np.vstack(batches[6].astype(int))
+        returns = np.vstack(batches[3])
+        old_act_logprobs = np.vstack(batches[4])
+        vs_preds = np.vstack(batches[5])
         speeds = np.reshape(speeds, (-1, 1))
-        next_speeds = np.reshape(next_speeds, (-1, 1))
+
 
         # convert to torch tensor
         imgs = tr.from_numpy(imgs).float()
-        next_imgs = tr.from_numpy(next_imgs).float()
         speeds = tr.from_numpy(speeds).float()
-        next_speeds = tr.from_numpy(next_speeds).float()
+        returns = tr.from_numpy(returns).float()
+        value_preds = tr.from_numpy(vs_preds).float()
         actions = tr.from_numpy(actions).float()
-        rewards = tr.from_numpy(rewards).float()
-        dones = tr.from_numpy(dones).float()
 
-        # train critic
-        feature = self.perception(imgs, speeds)
-        pred_q = self.critic(feature, actions)
-        next_feature = self.perception(next_imgs, next_speeds)
-        targ_act = self.actor_target(next_feature)
-        targ_q = self.critic_target(next_feature, targ_act)
-        target = rewards + (1 - dones) * self.gamma * targ_q
-        c_loss = F.mse_loss(pred_q, target).mean()
-        self.critic_optim.zero_grad()
-        c_loss.backward()
-        self.critic_optim.step()
+        advs = returns[:-1] - value_preds[:-1]
+        advs = (advs - advs.mean()) / (advs.std()+1e-5)
+        advs = advs.view(-1, 1)
+        value_loss_total = 0
+        actor_loss_total = 0
+        dist_entorpy_total = 0
+        perc_loss_total = 0
+        # train for k times
+        for k in range(self.k):
+            vs, act_logprobs, dist = self._evaluate(imgs, speeds, actions)
+            ratio = tr.exp(act_logprobs - old_act_logprobs)
+            surr1 = ratio * advs
+            surr2 = tr.clamp(ratio, 1.0 - self.clip, 1.0 + self.clip) * advs
+            actor_loss = -tr.min(surr1, surr2).mean()
+            if self.use_clipped:
+                value_pred_clipped = vs_preds + (vs - vs_preds).clamp(-self.clip,self.clip)
+                value_loss = (vs - returns).pow(2)
+                value_loss_clipped = (value_pred_clipped - returns).pow(2)
+                value_loss = 0.5 * tr.max(value_loss,value_loss_clipped).mean()
+            else:
+                value_loss = 0.5 * (returns -vs).pow(2).mean()
+            self.actor_critic_optim.zero_grad()
+            (value_loss * self.value_loss_coef + actor_loss -
+             dist * self.entropy_coef).backward()
+            nn.utils.clip_grad_norm_(self.actor_critic.parameters(),
+                                     self.max_grad_norm)
+            self.actor_critic_optim.step()
 
-        # train actor
-        self.actor_optim.zero_grad()
-        feature = self.perception(imgs, speeds)
-        a_loss = -self.critic(feature, self.actor(feature)).mean()
-        a_loss.backward()
-        self.actor_optim.step()
+            # train perception
+            self.perc_optim.zero_grad()
+            perc_loss = value_loss + actor_loss
+            perc_loss.backward()
+            self.perc_optim.step()
 
-        # train perception
-        self.perc_optim.zero_grad()
-        #p_loss = a_loss + c_loss
-        #p_loss.backward()
-        self.perc_optim.step()
-
+            value_loss_total += value_loss.item()
+            actor_loss_total += actor_loss.item()
+            dist_entorpy_total += dist.item()
+            perc_loss_total += perc_loss.item()
         # update target
         self.update_target()
+        num_updates = self.k * self.batch_size
+        value_loss_total /= num_updates
+        actor_loss_total /= num_updates
+        dist_entorpy_total /= num_updates
+        perc_loss_total /= num_updates
+        return value_loss_total, actor_loss_total, dist_entorpy_total, perc_loss_total
 
     def update_target(self):
         target = [self.actor_target, self.critic_target]
@@ -186,13 +244,8 @@ class DDPGAgent(BaseAgent):
             reshaped_speed = np.reshape(speed,(1, 1))
             img_tensor = tr.from_numpy(img).float()
             speed_tensor = tr.from_numpy(reshaped_speed).float()
-            feature = self.perception(img_tensor, speed_tensor).detach()
-            actions = self.actor(feature).detach().cpu().numpy()
-            noise_t = np.zeros(2)
-            noise_t[0] = max(self.epsilon, 0) * self.ou.function(actions[0][0], 0, 0.6, 0.3) # steering
-            noise_t[1] = max(self.epsilon, 0) * self.ou.function(actions[0][1], 0.5, 1, 0.15) # throttle
-            a_t = [(actions[0][0] + noise_t[0]), (actions[0][1] + noise_t[1])] # steering, throttle
-            self.epsilon -= 1.0 / self.epsilon_decay
+            v, actions, logprobs = self._act(img_tensor, speed_tensor).detach()
+            a_t = [actions[0][0], actions[0][1]] # steering, throttle
 
             if train_state < 4:
                 if self.train_step > 0:
@@ -205,8 +258,10 @@ class DDPGAgent(BaseAgent):
                         reward += 100
                     done = train_state > 1
                     self.r_sum += reward
-
-                    self.memory.save(self.last_state['img'], self.last_state['speed'], self.last_actions, reward, img, speed, done)
+                    mask = tr.FloatTensor([0.0 if done_ else 1.0 for done_ in done])
+                    bad_mask = tr.FloatTensor([1.0])
+                    self.memory.save(self.last_state['img'], self.last_state['speed'], self.last_actions, reward, \
+                                     logprobs, v, mask, bad_mask)
 
                     if done:
                         print("=======EPISODE DONE======")
@@ -269,40 +324,23 @@ class Perception(nn.Module):
         return x
 
 
-class Actor(nn.Module):
-    def __init__(self, num_action):
-        super(Actor, self).__init__()
+class ActorCritic(nn.Module):
+    def __init__(self, num_processed, num_hidden=128):
+        super(ActorCritic,self).__init__()
         self.actor = nn.Sequential(
-            nn.Linear(1216, 64),
-            nn.Dropout(0.5),
-            nn.ReLU(inplace=True),
-            nn.Linear(64, num_action),
-        )
-    def forward(self, x):
-        o = self.actor(x)
-        return o
-
-
-class Critic(nn.Module):
-    def __init__(self):
-        super(Critic, self).__init__()
-        self.action_extractor = nn.Sequential(
-            nn.Linear(2, 64),
-            nn.Dropout(0.5),
-            nn.ReLU(inplace=True),
-            nn.Linear(64, 32),
-            nn.Dropout(0.5),
-            nn.ReLU(inplace=True),
+            nn.Linear(num_processed,num_hidden),
+            nn.Tanh(inplace=True),
+            nn.Linear(num_hidden,num_hidden),
+            nn.Tanh(inplace=True)
         )
         self.critic = nn.Sequential(
-            nn.Linear(1248, 64),
-            nn.Dropout(0.5),
-            nn.ReLU(inplace=True),
-            nn.Linear(64, 1),
+            nn.Linear(num_processed, num_hidden),
+            nn.Tanh(inplace=True),
+            nn.Linear(num_hidden, num_hidden),
+            nn.Tanh(inplace=True)
         )
-    def forward(self, x, a):
-        a = self.action_extractor(a)
-        o = tr.cat([x, a], dim=-1)
-        o = self.critic(o)
-        return o
-
+        self.critic_linear = nn.Linear(num_hidden,1)
+    def forward(self, processed):
+        hidden_critic = self.critic(processed)
+        hidden_actor = self.actor(processed)
+        return self.critic_linear(hidden_critic), hidden_actor
