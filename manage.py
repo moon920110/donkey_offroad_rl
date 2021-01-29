@@ -4,7 +4,7 @@ Scripts to drive a donkey 2 car
 
 Usage:
     manage.py (drive) [--model=<model>] [--js] [--type=(linear|categorical|rnn|imu|behavior|3d|localizer|latent)] [--camera=(single|stereo)] [--meta=<key:value> ...] [--myconfig=<filename>]
-    manage.py (train) [--tub=<tub1,tub2,..tubn>] [--file=<file> ...] (--model=<model>) [--transfer=<model>] [--type=(linear|categorical|rnn|imu|behavior|3d|localizer)] [--continuous] [--aug] [--myconfig=<filename>]
+    manage.py (train) [--tub=<tub1,tub2,..tubn>] [--file=<file> ...] (--model=<model>) [--transfer=<model>] [--type=(linear|categorical|rnn|imu|behavior|3d|localizer)] [--continuous] [--aug] [--myconfig=<filename>] [--torch]
 
 
 Options:
@@ -732,6 +732,7 @@ if __name__ == '__main__':
 
     if args['train']:
         from train import multi_train, preprocessFileList
+        from torch_il_train import train as torch_train
 
         tub = args['--tub']
         model = args['--model']
@@ -749,5 +750,8 @@ if __name__ == '__main__':
             model_type = cfg.DEFAULT_MODEL_TYPE
             print("using default model type of", model_type)
 
-        multi_train(cfg, dirs, model, transfer, model_type, continuous, aug)
+        if args['--torch']:
+            torch_train(cfg, dirs, model, transfer, model_type, continuous, aug)
+        else:
+            multi_train(cfg, dirs, model, transfer, model_type, continuous, aug)
 
