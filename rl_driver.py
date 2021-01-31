@@ -40,6 +40,7 @@ from Torch_DDPG import DDPGAgent as DDPG
 from Keras_PPO import PPO
 from Keras_SAC import SAC
 from Keras_TD3 import TD3
+from Torch_IL import IL_TEST
 
 
 class RL_Driver():
@@ -58,6 +59,7 @@ class RL_Driver():
                 'PPO': PPO,
                 'SAC': SAC,
                 'TD3': TD3,
+                'IL_TEST': IL_TEST
                 }
 
         self.BATCH_SIZE = batch_size
