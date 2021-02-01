@@ -61,7 +61,6 @@ class Memory:
                 self.rets[step] = (self.rets[step + 1] * gamma * self.masks[step + 1] + self.rets[step]) * \
                                   self.bad_masks[step + 1] + (1 - self.bad_masks[step + 1]) * self.vals[step]
     def clear(self):
-        print('clear')
         self.step = 0
 
     def sample(self):
@@ -84,7 +83,6 @@ class PPOAgent(BaseAgent):
         self.actor_critic = ActorCritic(num_processed=1216,num_hidden=128)
         self.actor_critic_target = ActorCritic(num_processed=1216, num_hidden=128)
         # load model
-        self.actor_critic.load_state_dict(self.actor_critic.state_dict())
         self.actor_critic_target.load_state_dict(self.actor_critic.state_dict())
         self.tau = 1e-3
 
@@ -178,7 +176,6 @@ class PPOAgent(BaseAgent):
         returns = returns[:-1]
         # train for k times
         for k in range(self.k):
-            print(imgs.size())
             vs, act_logprobs, dist = self._evaluate(imgs, speeds, actions)
             act_logprobs = tr.cat(act_logprobs, axis=-1)
             ratio = tr.exp(act_logprobs - old_act_logprobs)
@@ -227,7 +224,6 @@ class PPOAgent(BaseAgent):
     def run(self, img, speed, meter, train_state):
         if train_state > 0:
             img = np.expand_dims(img, axis=0)
-            print(self.train_step, self.batch_size, self.memory.step)
             img = np.transpose(img, (0, 3, 1, 2))
             reshaped_speed = np.reshape(speed,(1, 1))
             img_tensor = tr.from_numpy(img).float()
@@ -262,9 +258,6 @@ class PPOAgent(BaseAgent):
                     if done[0]:
                         print("=======EPISODE DONE======")
                         print('reward sum: {}'.format(self.r_sum))
-                        if self.train_step < self.batch_size:
-                            self.train()
-                            self.save()
                         self.r_sum = 0
                         self.train_step = 0
                         self.last_state = None
