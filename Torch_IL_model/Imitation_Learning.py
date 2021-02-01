@@ -1,11 +1,12 @@
 import torch
 import torch.nn as nn
 from torch.optim import Adam
+from collections import OrderedDict
+import json
 
 import numpy as np
 from tensorboardX import SummaryWriter
-import common.const as const
-from common.utills import print_square
+import Torch_IL_model.const as const
 
 import cv2
 import random
@@ -64,7 +65,23 @@ class Base:
     
     def load(self, path):
         device = torch.device('cpu')
-        self.network.load_state_dict(torch.load(path, map_location=device))
+        if '.pt' in path:
+            self.network.load_state_dict(torch.load(path, map_location=device))
+        else:
+            data_dict = OrderedDict()
+            with open(path, 'r') as f:
+                data_dict = json.load(f)
+            own_state = self.network.state_dict()
+
+            for k, v in data_dict.items():
+                print('Loading parameter:', k)
+                if not k in own_state:
+                    print('Parameter', k, 'not found in own state')
+                if type(v) == list or type(v) == int:
+                    v = torch.tensor(v)
+                own_state[k].copy_(v)
+            self.network.load_state_dict(own_state)
+        print("Model Loaded")
 
     def train_step(self, measurement):
         raise NotImplementedError("Please Implement this method")
@@ -126,7 +143,6 @@ class Base:
                 verbose["epoch"] = epoch
                 verbose["step/epoch"] = "{}/{}".format(step, dataset_len)
                 verbose["step"] = self.total_step
-                print_square(verbose)
 
             '''save model'''
             self.save(self.save_dir + "epoch{}.pth".format(epoch + 1))
@@ -151,7 +167,6 @@ class Base:
                 verbose["epoch"] = epoch
                 verbose["step/epoch"] = "{}/{}".format(step, dataset_len)
                 verbose["step"] = self.total_step
-                print_square(verbose)
 
             '''save model'''
             self.save(self.save_dir + "epoch{}.pth".format(epoch+1))
