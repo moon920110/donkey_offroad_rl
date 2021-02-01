@@ -41,8 +41,8 @@ class SACAgent(BaseAgent):
         self.perception = Perception()
         self.actor= Actor(num_processed=1216, num_action=[len(self.steer), len(self.throttle)])
         self.actor_target = Actor(num_processed=1216, num_action=[len(self.steer), len(self.throttle)])
-        self.critic = Critic(1216+len(self.steer)+len(self.throttle))
-        self.critic_target = Critic(1216+len(self.steer)+len(self.throttle))
+        self.critic = Critic(1218)
+        self.critic_target = Critic(1218)
         # load model
         self.actor_target.load_state_dict(self.actor.state_dict())
         self.critic_target.load_state_dict(self.critic.state_dict())
@@ -118,7 +118,12 @@ class SACAgent(BaseAgent):
         with tr.no_grad():
             next_processed = self.perception(imgs_next,speeds_next)
             next_actions, next_logprobs, _ = self.actor.sample(next_processed)
-            next_actions = tr.cat(next_actions, axis=-1)
+            next_steers_idx, next_throttles_idx = tr.argmax(next_actions[0], axis=-1), tr.argmax(next_actions[1], axis=-1)
+            steers_value = tr.tensor(self.steer).repeat(next_steers_idx.size(0)).view(-1,len(self.steer))
+            throttles_value = tr.tensor(self.steer).repeat(next_throttles_idx.size(0)).view(-1,len(self.steer))
+            next_steers = tr.gather(steers_value, 1, next_steers_idx.view(-1,1))
+            next_throttles = tr.gather(throttles_value, 1, next_throttles_idx.view(-1,1))
+            next_actions = tr.cat([next_steers, next_throttles], axis=-1)
             next_logprobs = tr.cat(next_logprobs, axis=-1)
             qs1_target, qs2_target = self.critic_target(next_processed, next_actions)
             q_target = tr.min(qs1_target, qs2_target) - self.alpha * next_logprobs
@@ -136,7 +141,12 @@ class SACAgent(BaseAgent):
         # train actor
         processed = self.perception(imgs, speeds)
         actions, logprobs, _ = self.actor.sample(processed)
-        actions = tr.cat(actions, axis=-1)
+        steers_idx, throttles_idx = tr.argmax(actions[0], axis=-1), tr.argmax(actions[1], axis=-1)
+        steers_value = tr.tensor(self.steer).repeat(steers_idx.size(0)).view(-1,len(self.steer))
+        throttles_value = tr.tensor(self.steer).repeat(throttles_idx.size(0)).view(-1,len(self.steer))
+        steers = tr.gather(steers_value, 1, steers_idx.view(-1,1))
+        throttles = tr.gather(throttles_value, 1, throttles_idx.view(-1,1))
+        actions = tr.cat([steers, throttles], axis=-1)
         logprobs = tr.cat(logprobs, axis=-1)
         q1, q2 = self.critic(processed, actions)
         q = tr.min(q1,q2)
@@ -181,7 +191,7 @@ class SACAgent(BaseAgent):
                     done = [train_state > 1]
                     self.r_sum += reward
                     mask = tr.FloatTensor([0.0 if done_ else 1.0 for done_ in done])
-                    self.memory.save(self.last_state['img'], self.last_state['speed'], actions[0], actions[1], reward, img, speed, mask)
+                    self.memory.save(self.last_state['img'], self.last_state['speed'], a_t[0], a_t[1], reward, img, speed, mask)
 
                     if done[0]:
                         print("=======EPISODE DONE======")
