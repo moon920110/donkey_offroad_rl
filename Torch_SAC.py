@@ -18,7 +18,7 @@ class ReplayMemory:
         self.buffer = []
         self.position = 0
 
-    def insert(self, img, speed, steer, throttle, rew, next_img, next_speed, mask):
+    def save(self, img, speed, steer, throttle, rew, next_img, next_speed, mask):
         if len(self.buffer) < self.capacity:
             self.buffer.append(None)
         self.buffer[self.position] = (img, speed, steer, throttle, rew, next_img, next_speed, mask)
@@ -26,8 +26,8 @@ class ReplayMemory:
 
     def sample(self, batch_size):
         batch = random.sample(self.buffer, batch_size)
-        state, action, reward, next_state, done = map(np.stack, zip(*batch))
-        return state, action, reward, next_state, done
+        img, speed, steer, throttle, rew, next_img, next_speed, mask = map(np.stack, zip(*batch))
+        return img, speed, steer, throttle, rew, next_img, next_speed, mask
 
     def __len__(self):
         return len(self.buffer)
@@ -39,15 +39,15 @@ class SACAgent(BaseAgent):
         self.steer = [-0.3, -0.15, 0, 0.15, 0.3]
         self.throttle = [0, 0.25, 0.5, 0.75, 1]
         self.perception = Perception()
-        self.actor= Actor(num_action)
-        self.actor_target = Actor(num_action)
-        self.critic = Critic(num_action)
-        self.critic_target = Critic(num_action)
+        self.actor= Actor(num_processed=1216, num_action=[len(self.steer), len(self.throttle)])
+        self.actor_target = Actor(num_processed=1216, num_action=[len(self.steer), len(self.throttle)])
+        self.critic = Critic(1216)
+        self.critic_target = Critic(1216)
         # load model
         self.actor_target.load_state_dict(self.actor.state_dict())
         self.critic_target.load_state_dict(self.critic.state_dict())
         self.tau = 1e-3
-
+        self.evaluate = False
         # set optimizer
         self.lr = 0.001
         #self.decay = -5000
@@ -57,7 +57,7 @@ class SACAgent(BaseAgent):
 
         # common settings
         self.gamma = 0.99
-        self.memory = Memory(batch_size=32)
+        self.memory = ReplayMemory(50000, 1)
         self.model_path = model_path
         self.n = 0
         self.train_step = 0
@@ -68,9 +68,9 @@ class SACAgent(BaseAgent):
 
         # about SAC
         self.alpha = alpha
-        self.target_steer_entropy = -tr.pord(tr.Tensor(len(self.steer)).to(self.device)).item()
-        self.target_throttle_entropy = -tr.pord(tr.Tensor(len(self.throttle)).to(self.device)).item()
-        self.log_alpha = tr.zeros(1, requires_grad=True, device=self.device)
+        self.target_steer_entropy = -tr.prod(tr.Tensor(len(self.steer))).item()
+        self.target_throttle_entropy = -tr.prod(tr.Tensor(len(self.throttle))).item()
+        self.log_alpha = tr.zeros(1, requires_grad=True)
         self.alpha_optim = optim.Adam([self.log_alpha], lr=self.lr)
 
     def save(self):
@@ -86,10 +86,11 @@ class SACAgent(BaseAgent):
     def _act(self, img, scalar):
         processed = self.perception(img, scalar)
         if self.evaluate is False:
-            action, _, _ = self.actor(processed)
+            action, _ = self.actor(processed)
         else:
-            _, _, action = self.actor(processed)
-        return action.detach().cpu().numpy()[0]
+            _, action = self.actor(processed)
+        action = [action[0].detach().cpu().numpy()[0], action[1].detach().cpu().numpy()[0]]
+        return action
 
     def train(self):
         # sample in Memory
@@ -97,17 +98,19 @@ class SACAgent(BaseAgent):
         batches = np.array(batches).transpose()
         imgs = np.vstack(batches[0])
         speeds = np.vstack(batches[1])
-        actions = np.vstack(batches[2])
-        rews = np.vstack(batches[3])
-        imgs_next = np.vstack(batches[4])
-        speeds_next = np.vstack(batches[5])
+        steers = np.vstack(batches[2])
+        throttles = np.vstack(batches[3])
+        rews = np.vstack(batches[4])
+        imgs_next = np.vstack(batches[5])
+        speeds_next = np.vstack(batches[6])
         speeds = np.reshape(speeds, (-1, 1))
-        masks = np.vstack(batches[6])
+        masks = np.vstack(batches[7])
         # convert to torch tensor
         imgs = tr.from_numpy(imgs).float()
         speeds = tr.from_numpy(speeds).float()
         rews = tr.from_numpy(rews).float()
-        actions = tr.from_numpy(actions).float()
+        steers = tr.from_numpy(steers).float()
+        throttles = tr.from_numpy(throttles).float()
         masks = tr.from_numpy(masks).float()
 
         # train critic
@@ -159,8 +162,8 @@ class SACAgent(BaseAgent):
             reshaped_speed = np.reshape(speed,(1, 1))
             img_tensor = tr.from_numpy(img).float()
             speed_tensor = tr.from_numpy(reshaped_speed).float()
-            v, actions, logprobs = self._act(img_tensor, speed_tensor).detach()
-            a_t = [actions[0][0], actions[0][1]] # steering, throttle
+            actions = self._act(img_tensor, speed_tensor)
+            a_t = [actions[0][0], actions[1][0]] # steering, throttle
 
             if train_state < 4:
                 if self.train_step > 0:
@@ -171,11 +174,10 @@ class SACAgent(BaseAgent):
                         reward -= 100
                     elif train_state == 3:
                         reward += 100
-                    done = train_state > 1
+                    done = [train_state > 1]
                     self.r_sum += reward
                     mask = tr.FloatTensor([0.0 if done_ else 1.0 for done_ in done])
-                    self.memory.save(self.last_state['img'], self.last_state['speed'], self.last_actions, reward, \
-                                     logprobs, v, mask)
+                    self.memory.save(self.last_state['img'], self.last_state['speed'], self.last_actions[0], self.last_actions[1], reward, img, speed, mask)
 
                     if done:
                         print("=======EPISODE DONE======")
@@ -238,20 +240,20 @@ class Perception(nn.Module):
         return x
 
 class Actor(nn.Module):
-    def __init__(self, num_processed, num_hidden=128, num_action):
-        super(Actor,self).__init__()
+    def __init__(self, num_processed, num_action, num_hidden=128):
+        super(Actor, self).__init__()
         self.actor = nn.Sequential(
             nn.Linear(num_processed,num_hidden),
-            nn.Tanh(inplace=True),
+            nn.Tanh(),
             nn.Linear(num_hidden,num_hidden),
-            nn.Tanh(inplace=True)
+            nn.Tanh()
         )
-        self.steer_mu = nn.Sequential(nn.Linear(num_hidden,num_action[0]),nn.Tanh(inplace=True))
-        self.steer_std = nn.Sequential(nn.Linear(num_hidden,num_action[0]),nn.Tanh(inplace=True))
+        self.steer_mu = nn.Sequential(nn.Linear(num_hidden,num_action[0]),nn.Tanh())
+        self.steer_std = nn.Sequential(nn.Linear(num_hidden,num_action[0]),nn.Tanh())
 
-        self.throttle_mu = nn.Sequential(nn.Linear(num_hidden,num_action[1]),nn.Tanh(inplace=True))
-        self.throttle_std = nn.Sequential(nn.Linear(num_hidden, num_action[1]), nn.Tanh(inplace=True))
-        self.tanh = nn.Tanh(inplace=True)
+        self.throttle_mu = nn.Sequential(nn.Linear(num_hidden,num_action[1]),nn.Tanh())
+        self.throttle_std = nn.Sequential(nn.Linear(num_hidden, num_action[1]), nn.Tanh())
+        self.tanh = nn.Tanh()
     def forward(self, processed):
         hidden_actor = self.actor(processed)
         str_mu = self.steer_mu(hidden_actor)
@@ -266,27 +268,27 @@ class Actor(nn.Module):
         thr_dist = trd.Normal(thr_mu,thr_std)
         steers = self.tanh(str_dist.sample())
         throttles = self.tanh(thr_dist.sample())
-        str_logprobs = str_dist.log_probs(steers)
-        thr_logprobs = thr_dist.log_probs(throttles)
+        str_logprobs = str_dist.log_prob(steers)
+        thr_logprobs = thr_dist.log_prob(throttles)
         actions = [steers,throttles]
         logprobs = [str_logprobs, thr_logprobs]
         return actions,logprobs
 
 class Critic(nn.Module):
-    def __init__(self, num_processed, num_hidden=128, num_action):
+    def __init__(self, num_processed, num_hidden=128):
         super(Critic,self).__init__()
         self.critic1 = nn.Sequential(
             nn.Linear(num_processed, num_hidden),
-            nn.Tanh(inplace=True),
+            nn.Tanh(),
             nn.Linear(num_hidden, num_hidden),
-            nn.Tanh(inplace=True),
+            nn.Tanh(),
             nn.Linear(num_hidden, 1)
         )
         self.critic2 = nn.Sequential(
             nn.Linear(num_processed, num_hidden),
-            nn.Tanh(inplace=True),
+            nn.Tanh(),
             nn.Linear(num_hidden, num_hidden),
-            nn.Tanh(inplace=True),
+            nn.Tanh(),
             nn.Linear(num_hidden, 1)
         )
 

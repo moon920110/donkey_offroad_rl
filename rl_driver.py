@@ -37,8 +37,8 @@ from donkeycar.parts.encoder import RotaryEncoder
 from donkeycar.utils import *
 from normalizer import LN
 from Torch_DDPG import DDPGAgent as DDPG
-from Keras_PPO import PPO
-from Keras_SAC import SAC
+from Torch_PPO import PPOAgent as PPO
+from Torch_SAC import SACAgent as SAC
 from Keras_TD3 import TD3
 from Torch_IL import IL_TEST
 
@@ -382,6 +382,7 @@ if __name__ == '__main__':
     args = docopt(__doc__)
     cfg = dk.load_config(myconfig=args['--myconfig'])
 
+    # Not implemented yet
     if args['drive']:
         model_type = args['--type']
 
