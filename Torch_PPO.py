@@ -60,27 +60,18 @@ class Memory:
             for step in reversed(range(self.rews.size(0))):
                 self.rets[step] = (self.rets[step + 1] * gamma * self.masks[step + 1] + self.rets[step]) * \
                                   self.bad_masks[step + 1] + (1 - self.bad_masks[step + 1]) * self.vals[step]
-        self.imgs = tr.zeros(self.imgs)
-        self.speeds = tr.zeros(self.speeds)
-        self.throttles = tr.zeros(self.throttles)
-        self.steers = tr.zeros(self.steers)
-        self.rews = tr.zeros(self.rews)
-        self.vals = tr.zeros(self.vals)
-        self.rets = tr.zeros(self.rets)
-        self.steer_logprobs = tr.zeros(self.steer_logprobs)
-        self.throttle_logprobs = tr.zeros(self.throttle_logprobs)
-        self.masks = tr.ones(self.masks)
-        self.bad_masks = tr.ones(self.bad_masks)
+    def clear(self):
+        print('clear')
         self.step = 0
 
     def sample(self):
         batch = []
-        batch.append(self.imgs[:-1])
-        batch.append(self.speeds[:-1])
-        batch.append(tr.cat([self.steers,self.throttles],axis=1))
-        batch.append(self.rets)
-        batch.append(tr.cat([self.steer_logprobs,self.throttle_logprobs],axis=-1))
-        batch.append(self.vals)
+        batch.append(self.imgs[:self.step])
+        batch.append(self.speeds[:self.step])
+        batch.append(tr.cat([self.steers[:self.step],self.throttles[:self.step]],axis=1))
+        batch.append(self.rets[:self.step + 1])
+        batch.append(tr.cat([self.steer_logprobs[:self.step],self.throttle_logprobs[:self.step]],axis=-1))
+        batch.append(self.vals[:self.step + 1])
         return batch
 
 class PPOAgent(BaseAgent):
@@ -91,9 +82,10 @@ class PPOAgent(BaseAgent):
         self.throttle = [0, 0.25, 0.5, 0.75, 1]
         self.perception = Perception()
         self.actor_critic = ActorCritic(num_processed=1216,num_hidden=128)
-
+        self.actor_critic_target = ActorCritic(num_processed=1216, num_hidden=128)
         # load model
         self.actor_critic.load_state_dict(self.actor_critic.state_dict())
+        self.actor_critic_target.load_state_dict(self.actor_critic.state_dict())
         self.tau = 1e-3
 
         # set optimizer
@@ -104,7 +96,7 @@ class PPOAgent(BaseAgent):
 
         # common settings
         self.gamma = 0.99
-        self.memory = Memory(batch_size=32, img_shape=input_shape)
+        self.memory = Memory(batch_size=batch_size, img_shape=input_shape)
         self.model_path = model_path
         self.n = 0
         self.train_step = 0
@@ -126,10 +118,8 @@ class PPOAgent(BaseAgent):
         tr.save(self.actor_critic.state_dict(),'{}_actorcritic.h5'.format(self.model_path))
 
     def load(self,model_paths):
-        self.actor = tr.load(model_paths[0])
-        self.actor_target = tr.load(model_paths[1])
-        self.critic = tr.load(model_paths[2])
-        self.critic_target = tr.load(model_paths[3])
+        self.actor_critic = tr.load(model_paths[0])
+        self.actor_critic_target = tr.load(model_paths[1])
     def _evaluate(self, imgs, scalars, actions):
         processed = self.perception(imgs, scalars)
         vs, hidden_actor = self.actor_critic(processed)
@@ -141,10 +131,11 @@ class PPOAgent(BaseAgent):
         steers = actions[:, 0]
         steer_logprobs = steer_dist.log_probs(steers)
         throttle_logprobs = throttle_dist.log_probs(throttles)
-        steer_dist_entropy = steer_dist.entropy().mean()
-        throttle_dist_entropy = throttle_dist.entropy().mean()
+        steer_dist_entropy = steer_dist.entropy()
+        throttle_dist_entropy = throttle_dist.entropy()
         logprobs = [steer_logprobs, throttle_logprobs]
-        dist_entropy = [steer_dist_entropy, throttle_dist_entropy]
+        dist_entropy = tr.cat([steer_dist_entropy, throttle_dist_entropy])
+        dist_entropy = dist_entropy.mean(axis=-1)
         return vs, logprobs, dist_entropy
 
     def _act(self, img, scalar, deterministic=False):
@@ -187,6 +178,7 @@ class PPOAgent(BaseAgent):
         returns = returns[:-1]
         # train for k times
         for k in range(self.k):
+            print(imgs.size())
             vs, act_logprobs, dist = self._evaluate(imgs, speeds, actions)
             act_logprobs = tr.cat(act_logprobs, axis=-1)
             ratio = tr.exp(act_logprobs - old_act_logprobs)
@@ -201,7 +193,7 @@ class PPOAgent(BaseAgent):
             else:
                 value_loss = 0.5 * (returns -vs).pow(2).mean()
             self.actor_critic_optim.zero_grad()
-            print(value_loss.size(), self.value_loss_coef, actor_loss.size(), dist.size(), self.entropy_coef)
+ 
             (value_loss * self.value_loss_coef + actor_loss -
              dist * self.entropy_coef).backward()
             nn.utils.clip_grad_norm_(self.actor_critic.parameters(),
@@ -221,11 +213,12 @@ class PPOAgent(BaseAgent):
         value_loss_total /= num_updates
         actor_loss_total /= num_updates
         dist_entorpy_total /= num_updates
+        self.memory.clear()
         return value_loss_total, actor_loss_total, dist_entorpy_total
 
     def update_target(self):
-        target = [self.actor_target, self.critic_target]
-        source = [self.actor, self.critic]
+        target = [self.actor_critic_target]
+        source = [self.actor_critic]
 
         for t, s in zip(target, source):
             for target_param, param in zip(t.parameters(), s.parameters()):
@@ -234,6 +227,7 @@ class PPOAgent(BaseAgent):
     def run(self, img, speed, meter, train_state):
         if train_state > 0:
             img = np.expand_dims(img, axis=0)
+            print(self.train_step, self.batch_size, self.memory.step)
             img = np.transpose(img, (0, 3, 1, 2))
             reshaped_speed = np.reshape(speed,(1, 1))
             img_tensor = tr.from_numpy(img).float()
@@ -257,10 +251,20 @@ class PPOAgent(BaseAgent):
                     self.memory.save(tr.tensor(self.last_state['img'][0]), tr.tensor(self.last_state['speed']), \
                                     tr.tensor(self.last_actions), tr.tensor(reward), tr.tensor(logprobs), \
                                     tr.tensor([v]), mask, bad_mask)
-
-                    if done:
+                    if self.train_step % self.batch_size == self.batch_size - 1:
+                        self.train_step += 1
+                        self.last_state = {
+                                'img': img,
+                            'speed': speed,
+                            }
+                        self.last_actions = a_t
+                        return 0, 0, True
+                    if done[0]:
                         print("=======EPISODE DONE======")
                         print('reward sum: {}'.format(self.r_sum))
+                        if self.train_step < self.batch_size:
+                            self.train()
+                            self.save()
                         self.r_sum = 0
                         self.train_step = 0
                         self.last_state = None
@@ -276,12 +280,13 @@ class PPOAgent(BaseAgent):
                 self.train_step += 1
 
             elif train_state == 4:
-                if self.n > self.batch_size:
+                if self.train_step >= self.batch_size:
                     print("TRAIN START!")
                     self.train()
                     print("TRAIN DONE!")
                     self.save()
                     print("SAVE DONE!")
+                    self.train_step = 0
                 return 0, 0, False
 
             return a_t[0], a_t[1], False
