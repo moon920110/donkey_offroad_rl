@@ -14,7 +14,7 @@ throttle_values=[0, 0.25, 0.5, 0.75, 1]
 class Memory:
     def __init__(self, batch_size, img_shape):
         self.batch_size = batch_size
-        self.imgs = tr.zeros(batch_size+1, 3, 120, 160)
+        self.imgs = tr.zeros(batch_size+1,*img_shape)
         self.speeds = tr.zeros(batch_size+1,1)
         self.throttles = tr.zeros(batch_size,1)
         self.steers = tr.zeros(batch_size,1)
@@ -28,6 +28,8 @@ class Memory:
         self.step = 0
 
     def save(self, img, speed, acts, rew, logprobs, v, mask, bad_mask):
+        print(img.size())
+        print(self.imgs[self.step + 1].size())
         self.imgs[self.step + 1].copy_(img)
         self.speeds[self.step + 1].copy_(speed)
         self.throttles[self.step].copy_(acts[1])
@@ -77,14 +79,14 @@ class Memory:
         batch = []
         batch.append(self.imgs[:-1])
         batch.append(self.speeds[:-1])
-        batch.append(tr.cat([self.steers,self.throttles],axis=1))
+        batch.append(tr.cat([self.steers,self.throttles],axis=-1))
         batch.append(self.rets)
         batch.append(tr.cat([self.steer_logprobs,self.throttle_logprobs],axis=-1))
         batch.append(self.vals)
         return batch
 
 class PPOAgent(BaseAgent):
-    def __init__(self, num_action, input_shape=(120, 160, 3), batch_size=64, training=True, model_path=None, k=4,
+    def __init__(self, num_action, input_shape=(3, 120, 160), batch_size=64, training=True, model_path=None, k=4,
                  clip=0.2, use_clipped=True, entropy_coef=0.01, max_grad_norm=0.5, value_loss_coef=0.5, *args, **kwargs):
         super(PPOAgent, self).__init__(*args, **kwargs)
         self.steer = [-0.3, -0.15, 0, 0.15, 0.3]
@@ -137,10 +139,8 @@ class PPOAgent(BaseAgent):
         throttle_dist = self.dist2(hidden_actor)
 
         # actions = [steer, throttle]
-        throttles = actions[:, 1]
-        steers = actions[:, 0]
-        steer_logprobs = steer_dist.log_probs(steers)
-        throttle_logprobs = throttle_dist.log_probs(throttles)
+        steer_logprobs = steer_dist.log_probs(actions[0])
+        throttle_logprobs = throttle_dist.log_probs(actions[1])
         steer_dist_entropy = steer_dist.entropy().mean()
         throttle_dist_entropy = throttle_dist.entropy().mean()
         logprobs = [steer_logprobs, throttle_logprobs]
@@ -166,29 +166,34 @@ class PPOAgent(BaseAgent):
 
     def train(self):
         # sample in Memory
-        batches = self.memory.sample()
-        imgs = batches[0]
-        speeds = batches[1]
-        actions = batches[2]
-        returns = batches[3]
-        old_act_logprobs = batches[4]
-        vs_preds = batches[5]
+        batches = self.memory.sample(batch_size=self.batch_size)
+        batches = np.array(batches).transpose()
+        imgs = np.vstack(batches[0])
+        speeds = np.vstack(batches[1])
+        actions = np.vstack(batches[2])
+        returns = np.vstack(batches[3])
+        old_act_logprobs = np.vstack(batches[4])
+        vs_preds = np.vstack(batches[5])
+        speeds = np.reshape(speeds, (-1, 1))
 
 
         # convert to torch tensor
+        imgs = tr.from_numpy(imgs).float()
+        speeds = tr.from_numpy(speeds).float()
+        returns = tr.from_numpy(returns).float()
+        value_preds = tr.from_numpy(vs_preds).float()
+        actions = tr.from_numpy(actions).float()
 
-        advs = returns[:-1] - vs_preds[:-1]
+        advs = returns[:-1] - value_preds[:-1]
         advs = (advs - advs.mean()) / (advs.std()+1e-5)
         advs = advs.view(-1, 1)
         value_loss_total = 0
         actor_loss_total = 0
         dist_entorpy_total = 0
-        vs_preds = vs_preds[:-1]
-        returns = returns[:-1]
+        perc_loss_total = 0
         # train for k times
         for k in range(self.k):
             vs, act_logprobs, dist = self._evaluate(imgs, speeds, actions)
-            act_logprobs = tr.cat(act_logprobs, axis=-1)
             ratio = tr.exp(act_logprobs - old_act_logprobs)
             surr1 = ratio * advs
             surr2 = tr.clamp(ratio, 1.0 - self.clip, 1.0 + self.clip) * advs
@@ -201,7 +206,6 @@ class PPOAgent(BaseAgent):
             else:
                 value_loss = 0.5 * (returns -vs).pow(2).mean()
             self.actor_critic_optim.zero_grad()
-            print(value_loss.size(), self.value_loss_coef, actor_loss.size(), dist.size(), self.entropy_coef)
             (value_loss * self.value_loss_coef + actor_loss -
              dist * self.entropy_coef).backward()
             nn.utils.clip_grad_norm_(self.actor_critic.parameters(),
@@ -210,18 +214,22 @@ class PPOAgent(BaseAgent):
 
             # train perception
             self.perc_optim.zero_grad()
+            perc_loss = value_loss + actor_loss
+            perc_loss.backward()
             self.perc_optim.step()
 
             value_loss_total += value_loss.item()
             actor_loss_total += actor_loss.item()
             dist_entorpy_total += dist.item()
+            perc_loss_total += perc_loss.item()
         # update target
         self.update_target()
         num_updates = self.k * self.batch_size
         value_loss_total /= num_updates
         actor_loss_total /= num_updates
         dist_entorpy_total /= num_updates
-        return value_loss_total, actor_loss_total, dist_entorpy_total
+        perc_loss_total /= num_updates
+        return value_loss_total, actor_loss_total, dist_entorpy_total, perc_loss_total
 
     def update_target(self):
         target = [self.actor_target, self.critic_target]
@@ -254,9 +262,10 @@ class PPOAgent(BaseAgent):
                     self.r_sum += reward
                     mask = tr.FloatTensor([0.0 if done_ else 1.0 for done_ in done])
                     bad_mask = tr.FloatTensor([1.0])
-                    self.memory.save(tr.tensor(self.last_state['img'][0]), tr.tensor(self.last_state['speed']), \
-                                    tr.tensor(self.last_actions), tr.tensor(reward), tr.tensor(logprobs), \
-                                    tr.tensor([v]), mask, bad_mask)
+                    print(tr.from_numpy(self.last_state['img'][0]), tr.from_numpy(self.last_state['speed']))
+                    self.memory.save(tr.from_numpy(self.last_state['img'][0]), tr.Tensor(self.last_state['speed']), \
+                                    tr.from_numpy(self.last_actions), tr.Tensor(reward), tr.from_numpy(logprobs), \
+                                    tr.from_numpy(v), tr.from_numpy(mask), tr.from_numpy(bad_mask))
 
                     if done:
                         print("=======EPISODE DONE======")
