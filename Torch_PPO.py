@@ -149,7 +149,7 @@ class PPOAgent(BaseAgent):
             throttle = throttle_dist.sample()
         steer_logprobs = steer_dist.log_probs(steer)
         throttle_logprobs = throttle_dist.log_probs(throttle)
-        action = [steer.detach(), throttle.detach()]
+        action = [steer.detach().cpu().numpy(), throttle.detach().cpu().numpy()]
         logprobs = [steer_logprobs.detach(), throttle_logprobs.detach()]
         return v.detach(), action, logprobs
 
@@ -229,8 +229,8 @@ class PPOAgent(BaseAgent):
             img_tensor = tr.from_numpy(img).float()
             speed_tensor = tr.from_numpy(reshaped_speed).float()
             v, actions, logprobs = self._act(img_tensor, speed_tensor)
-            a_t = [actions[0][0], actions[1][0]] # steering, throttle
-
+            a_t = [self.steer[int(actions[0][0])], self.throttle[int(actions[1][0])]]
+            print(a_t)
             if train_state < 4:
                 if self.train_step > 0:
                     self.n += 1
