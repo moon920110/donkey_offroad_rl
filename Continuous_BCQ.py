@@ -1,15 +1,18 @@
+import os
 import copy
 import numpy as np
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
-
+import json
 import random
-
+import torchvision.transforms as transforms
+from collections import OrderedDict
+from utils.utils import *
 
 
 class Actor(nn.Module):
-    def __init__(self, state_dim, action_dim, max_action, phi=0.05):
+    def __init__(self, max_action, phi=0.05):
         super(Actor, self).__init__()
         self.features = nn.Sequential(
             nn.Conv2d(3, 24, 5, 2),
@@ -34,7 +37,7 @@ class Actor(nn.Module):
         )
 
         self.acti = nn.Sequential(
-            nn.Linear(1216 +2,64),
+            nn.Linear(1216 + 2, 64),
             nn.Dropout(0.5),
             nn.ReLU(),
             nn.Linear(64, 2),
@@ -54,7 +57,7 @@ class Actor(nn.Module):
 
 
 class Critic(nn.Module):
-    def __init__(self, state_dim, action_dim):
+    def __init__(self):
         super(Critic, self).__init__()
         self.features = nn.Sequential(
             nn.Conv2d(3, 24, 5, 2),
@@ -69,13 +72,13 @@ class Critic(nn.Module):
             nn.ReLU(),
         )
         self.acti = nn.Sequential(
-            nn.Linear(1216 +2,64),
+            nn.Linear(1216 + 2, 64),
             nn.Dropout(0.5),
             nn.ReLU(),
             nn.Linear(64, 1),
         )
         self.acti2 = nn.Sequential(
-            nn.Linear(1216 +2,64),
+            nn.Linear(1216 + 2, 64),
             nn.Dropout(0.5),
             nn.ReLU(),
             nn.Linear(64, 1),
@@ -112,7 +115,7 @@ class Critic(nn.Module):
 
 # Vanilla Variational Auto-Encoder
 class VAE(nn.Module):
-    def __init__(self, state_dim, action_dim, latent_dim, max_action, device):
+    def __init__(self, action_dim, latent_dim, max_action, device):
         super(VAE, self).__init__()
         self.features = nn.Sequential(
             nn.Conv2d(3, 24, 5, 2),
@@ -184,18 +187,18 @@ class VAE(nn.Module):
 
 
 class BCQ(object):
-    def __init__(self, state_dim, action_dim, max_action, device, discount=0.99, tau=0.005, lmbda=0.75, phi=0.05): #0.005
+    def __init__(self, action_dim, max_action, device, discount=0.99, tau=0.005, lmbda=0.75, phi=0.05): #0.005
         latent_dim = action_dim * 2
 
-        self.actor = Actor(state_dim, action_dim, max_action, phi).to(device)
+        self.actor = Actor(max_action, phi).to(device)
         self.actor_target = copy.deepcopy(self.actor)
         self.actor_optimizer = torch.optim.Adam(self.actor.parameters(), lr=1e-3)
 
-        self.critic = Critic(state_dim, action_dim).to(device)
+        self.critic = Critic().to(device)
         self.critic_target = copy.deepcopy(self.critic)
         self.critic_optimizer = torch.optim.Adam(self.critic.parameters(), lr=1e-3)
 
-        self.vae = VAE(state_dim, action_dim, latent_dim, max_action, device).to(device)
+        self.vae = VAE(action_dim, latent_dim, max_action, device).to(device)
         self.vae_optimizer = torch.optim.Adam(self.vae.parameters())
 
         self.max_action = max_action
@@ -205,15 +208,27 @@ class BCQ(object):
         self.lmbda = lmbda
         self.device = device
 
-    def select_action(self, state, speed):
+        self.transform = transforms.Compose([
+            transforms.Resize((120, 160)),
+            transforms.ToTensor(),
+            ])
 
+    def select_action(self, state, speed):
         with torch.no_grad():
-            state = state.repeat(100, 1,1,1)
-            speed = speed.repeat(100,1)
-            action = self.actor(state, speed, self.vae.decode(state, speed ,z=None))
+            state = state.repeat(10, 1, 1, 1)
+            speed = speed.repeat(10, 1)
+            action = self.actor(state, speed, self.vae.decode(state, speed, z=None))
             q1 = self.critic.q1(state, speed, action)
             ind = q1.argmax(0)
         return action[ind].cpu().data.numpy().flatten()
+    
+    def run(self, img, speed):
+        img = numpy_to_pil(img)
+        img = self.transform(img).float().unsqueeze(0)
+        speed = torch.FloatTensor([speed])
+        action = self.select_action(img, speed)
+        print(action[0], action[1])
+        return action[0], action[1] * 1.5
 
     def train(self, replay_buffer, iterations, batch_size=100):
 
@@ -280,6 +295,44 @@ class BCQ(object):
         torch.save(self.vae.state_dict(), filename + "_vae")
 
     def load(self, filename):
-        self.actor.load_state_dict(torch.load(filename + "_actor"))
-        self.critic.load_state_dict(torch.load(filename + "_critic"))
-        self.vae.load_state_dict(torch.load(filename + "_vae"))
+        # self.actor.load_state_dict(torch.load(filename + "_actor"))
+        # self.critic.load_state_dict(torch.load(filename + "_critic"))
+        # self.vae.load_state_dict(torch.load(filename + "_vae"))
+        vae_path = filename
+        actor_path = filename.replace("vae", "actor")
+        critic_path = filename.replace("vae", "critic")
+
+        def load_json(path, network):
+            data_dict = OrderedDict()
+            with open(path, 'r') as f:
+                data_dict = json.load(f)
+            if network == 'vae':
+                own_state = self.vae.state_dict()
+            elif network == 'actor':
+                own_state = self.actor.state_dict()
+            else:
+                own_state = self.critic.state_dict()
+
+            for k, v in data_dict.items():
+                print('Loading parameter: {} of {}'.format(k, network))
+                if not k in own_state:
+                    print('Parameter {} not found in {} state'.format(k, network))
+                if type(v) == list or type(v) == int:
+                    v = torch.tensor(v)
+                own_state[k].copy_(v)
+            
+            if network == 'vae':
+                self.vae.load_state_dict(own_state)
+            elif network == 'actor':
+                self.actor.load_state_dict(own_state)
+            else:
+                self.critic.load_state_dict(own_state)
+            print('{} Model Loaded'.format(network))
+
+        # load vae
+        load_json(vae_path, 'vae')
+        # load actor
+        load_json(actor_path, 'actor')
+        # load critic
+        load_json(critic_path, 'critic')
+

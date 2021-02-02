@@ -443,6 +443,9 @@ def drive(cfg, model_path=None, use_joystick=False, model_type=None, camera_type
 
             model_reload_cb = reload_weights
 
+        elif '.pt' in model_path:
+            load_model(kl, model_path)
+
         else:
             print("ERR>> Unknown extension type on model file!!")
             return

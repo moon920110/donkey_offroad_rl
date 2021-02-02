@@ -65,7 +65,7 @@ class TubDataset(Dataset):
         self.transforms = transforms.Compose([
             transforms.Resize((120, 160)),
             transforms.ToTensor(),
-            transforms.Normalize(mean=cfg.NORM_MEAN, std=cfg.NORM_STD)])
+            ])
 
     def __len__(self):
         return len(self.gen_records)
@@ -298,7 +298,7 @@ def train(cfg, tub_names, model_name, transfer_model, model_type, continuous, au
     else:
         train_type = model_type
 
-    kl = get_model_by_type(train_type, cfg=cfg)
+    kl = TorchIL()
 
     print('training with model type', type(kl))
 
