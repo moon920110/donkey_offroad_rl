@@ -306,7 +306,7 @@ class RL_Driver():
         outputs=['pilot/angle', 'pilot/throttle', 'kl/train_trigger']
 
         self.V.add(kl, 
-            inputs=[inf_input, 'rotaryencoder/meter_per_second', 'rotaryencoder/meter', 'train_state'], 
+            inputs=[inf_input, 'rotaryencoder/meter_per_second', 'rotaryencoder/delta', 'train_state'], 
             outputs=outputs)
         
         #Choose what inputs should change the car.

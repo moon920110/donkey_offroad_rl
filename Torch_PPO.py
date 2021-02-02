@@ -15,14 +15,14 @@ class Memory:
     def __init__(self, batch_size, img_shape):
         self.batch_size = batch_size
         self.imgs = tr.zeros(batch_size+1, 3, 120, 160)
-        self.speeds = tr.zeros(batch_size+1,1)
-        self.throttles = tr.zeros(batch_size,1)
-        self.steers = tr.zeros(batch_size,1)
-        self.rews = tr.zeros(batch_size,1)
-        self.vals = tr.zeros(batch_size+1,1)
-        self.rets = tr.zeros(batch_size+1,1)
-        self.steer_logprobs = tr.zeros(batch_size,1)
-        self.throttle_logprobs = tr.zeros(batch_size,1)
+        self.speeds = tr.zeros(batch_size+1, 1)
+        self.throttles = tr.zeros(batch_size, 1)
+        self.steers = tr.zeros(batch_size, 1)
+        self.rews = tr.zeros(batch_size, 1)
+        self.vals = tr.zeros(batch_size+1, 1)
+        self.rets = tr.zeros(batch_size+1, 1)
+        self.steer_logprobs = tr.zeros(batch_size, 1)
+        self.throttle_logprobs = tr.zeros(batch_size, 1)
         self.masks = tr.ones(batch_size+1, 1)
         self.bad_masks = tr.ones(batch_size+1, 1)
         self.step = 0
@@ -38,7 +38,7 @@ class Memory:
         self.throttle_logprobs[self.step].copy_(logprobs[1])
         self.masks[self.step + 1].copy_(mask)
         self.bad_masks[self.step + 1].copy_(bad_mask)
-        self.step = (self.step + 1) % self.batch_size
+        self.step = (self.step + 1) % (self.batch_size + 1)
 
     def after_train(self):
         self.imgs[0].copy_(self.imgs[-1])
@@ -46,7 +46,7 @@ class Memory:
         self.masks[0].copy_(self.masks[-1])
         self.bad_masks[0].copy_(self.bad_masks[-1])
 
-    def compute_returns(self, next_val, use_gae, gamma, gae_lambda):
+    def compute_returns(self, next_val, gamma, use_gae=False, gae_lambda=None):
         if use_gae:
             self.vals[-1] = next_val
             gae = 0
@@ -56,10 +56,11 @@ class Memory:
                 gae = gae * self.bad_masks[step + 1]
                 self.rets[step] = gae + self.vals[step]
         else:
-            self.rets[-1] = next_val
+            self.rets[-1].copy_(next_val)
             for step in reversed(range(self.rews.size(0))):
-                self.rets[step] = (self.rets[step + 1] * gamma * self.masks[step + 1] + self.rets[step]) * \
-                                  self.bad_masks[step + 1] + (1 - self.bad_masks[step + 1]) * self.vals[step]
+                self.rets[step].copy_((self.rets[step + 1] * gamma * self.masks[step + 1] + self.rets[step]) * \
+                                  self.bad_masks[step + 1] + (1 - self.bad_masks[step + 1]) * self.vals[step])
+
     def clear(self):
         self.step = 0
 
@@ -96,7 +97,7 @@ class PPOAgent(BaseAgent):
         self.gamma = 0.99
         self.memory = Memory(batch_size=batch_size, img_shape=input_shape)
         self.model_path = model_path
-        self.n = 0
+        self.n = 1
         self.train_step = 0
         self.r_sum = 0
         self.last_state = None
@@ -163,7 +164,6 @@ class PPOAgent(BaseAgent):
         old_act_logprobs = batches[4]
         vs_preds = batches[5]
 
-
         # convert to torch tensor
 
         advs = returns[:-1] - vs_preds[:-1]
@@ -223,6 +223,7 @@ class PPOAgent(BaseAgent):
 
     def run(self, img, speed, meter, train_state):
         if train_state > 0:
+            img /= 255.
             img = np.expand_dims(img, axis=0)
             img = np.transpose(img, (0, 3, 1, 2))
             reshaped_speed = np.reshape(speed,(1, 1))
@@ -233,28 +234,17 @@ class PPOAgent(BaseAgent):
 
             if train_state < 4:
                 if self.train_step > 0:
-                    self.n += 1
-
-                    reward = meter - self.train_step * 0.01
-                    if train_state == 2:
-                        reward -= 100
-                    elif train_state == 3:
-                        reward += 100
                     done = [train_state > 1]
-                    self.r_sum += reward
-                    mask = tr.FloatTensor([0.0 if done_ else 1.0 for done_ in done])
-                    bad_mask = tr.FloatTensor([1.0])
-                    self.memory.save(tr.tensor(self.last_state['img'][0]), tr.tensor(self.last_state['speed']), \
-                                    tr.tensor(self.last_actions), tr.tensor(reward), tr.tensor(logprobs), \
-                                    tr.tensor([v]), mask, bad_mask)
-                    if self.train_step % self.batch_size == self.batch_size - 1:
+                    if self.n % (self.batch_size+1) == 0:
                         self.train_step += 1
                         self.last_state = {
-                                'img': img,
+                            'img': img,
                             'speed': speed,
                             }
                         self.last_actions = a_t
+                        self.memory.compute_returns(v[0], self.gamma)
                         return 0, 0, True
+
                     if done[0]:
                         print("=======EPISODE DONE======")
                         print('reward sum: {}'.format(self.r_sum))
@@ -262,9 +252,24 @@ class PPOAgent(BaseAgent):
                         self.train_step = 0
                         self.last_state = None
                         self.last_actions = None
+                        self.memory.compute_returns(tr.tensor([0]), self.gamma)
 
                         return 0, 0, True
 
+                    self.n += 1
+
+                    reward = meter - 0.1
+                    if train_state == 2:
+                        reward -= 100
+                    elif train_state == 3:
+                        reward += 100
+                    self.r_sum += reward
+                    mask = tr.FloatTensor([0.0 if done_ else 1.0 for done_ in done])
+                    bad_mask = tr.FloatTensor([1.0])
+                    self.memory.save(tr.tensor(self.last_state['img'][0]), tr.tensor(self.last_state['speed']), \
+                                    tr.tensor(self.last_actions), tr.tensor(reward), tr.tensor(logprobs), \
+                                    tr.tensor([v]), mask, bad_mask)
+                                        
                 self.last_state = {
                         'img': img,
                         'speed': speed,
@@ -273,16 +278,17 @@ class PPOAgent(BaseAgent):
                 self.train_step += 1
 
             elif train_state == 4:
-                if self.train_step >= self.batch_size:
+                if self.n >= (self.batch_size+1):
                     print("TRAIN START!")
                     self.train()
                     print("TRAIN DONE!")
                     self.save()
                     print("SAVE DONE!")
-                    self.train_step = 0
+                    self.n = 1
+                    self.memory.after_train()
                 return 0, 0, False
 
-            return a_t[0], a_t[1], False
+            return self.steer[a_t[0]], self.throttle[a_t[1]], False
         return 0, 0, False
 
 
