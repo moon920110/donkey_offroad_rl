@@ -4,7 +4,7 @@ Scripts to drive a donkey 2 car
 
 Usage:
     manage.py (drive) [--model=<model>] [--js] [--type=(linear|categorical|rnn|imu|behavior|3d|localizer|latent)] [--camera=(single|stereo)] [--meta=<key:value> ...] [--myconfig=<filename>]
-    manage.py (train) [--tub=<tub1,tub2,..tubn>] [--file=<file> ...] (--model=<model>) [--transfer=<model>] [--type=(linear|categorical|rnn|imu|behavior|3d|localizer)] [--continuous] [--aug] [--myconfig=<filename>] [--torch]
+    manage.py (train) [--tub=<tub1,tub2,..tubn>] [--file=<file> ...] (--model=<model>) [--transfer=<model>] [--type=(linear|categorical|rnn|imu|behavior|3d|localizer)] [--continuous] [--aug] [--myconfig=<filename>]
 
 
 Options:
@@ -33,7 +33,9 @@ from donkeycar.parts.behavior import BehaviorPart
 from donkeycar.parts.file_watcher import FileWatcher
 from donkeycar.parts.launch import AiLaunch
 from donkeycar.utils import *
+from donkeycar.parts.torch import TorchIL
 from Torch_IL import IL_TEST
+from Continuous_BCQ import BCQ
 from donkeycar.parts.encoder import RotaryEncoder
 from normalizer import LN
 
@@ -380,10 +382,8 @@ def drive(cfg, model_path=None, use_joystick=False, model_type=None, camera_type
         inputs=[inf_input,
             'imu/acl_x', 'imu/acl_y', 'imu/acl_z',
             'imu/gyr_x', 'imu/gyr_y', 'imu/gyr_z']
-    elif model_type == 'il':
-        inputs=[inf_input, 'rotaryencoder/meter_per_second']
     else:
-        inputs=[inf_input]
+        inputs=[inf_input, 'rotaryencoder/meter_per_second']
 
     def load_model(kl, model_path):
         start = time.time()
@@ -415,8 +415,15 @@ def drive(cfg, model_path=None, use_joystick=False, model_type=None, camera_type
             print("ERR>> problems loading model json", json_fnm)
 
     if model_path:
+        print('model type is', model_type)
         #When we have a model, first create an appropriate Keras part
-        kl = IL_TEST(model_path)
+        if model_type == 'il_sim2real':
+            kl = IL_TEST()
+        elif model_type == 'offline_rl':
+            kl = BCQ(2, 1., 'cpu')
+        else:
+            kl = TorchIL()
+        load_model(kl, model_path)
 
         model_reload_cb = None
         
@@ -723,8 +730,5 @@ if __name__ == '__main__':
             model_type = cfg.DEFAULT_MODEL_TYPE
             print("using default model type of", model_type)
 
-        if args['--torch']:
-            torch_train(cfg, dirs, model, transfer, model_type, continuous, aug)
-        else:
-            multi_train(cfg, dirs, model, transfer, model_type, continuous, aug)
+        torch_train(cfg, dirs, model, transfer, model_type, continuous, aug)
 

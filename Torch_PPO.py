@@ -4,6 +4,8 @@ import numpy as np
 import torch.optim as optim
 import torch.nn.functional as F
 from distributions import Categorical
+from Torch_IL_model.networks import *
+from collections import OrderedDict
 import random
 
 from collections import deque
@@ -15,14 +17,14 @@ class Memory:
     def __init__(self, batch_size, img_shape):
         self.batch_size = batch_size
         self.imgs = tr.zeros(batch_size+1, 3, 120, 160)
-        self.speeds = tr.zeros(batch_size+1,1)
-        self.throttles = tr.zeros(batch_size,1)
-        self.steers = tr.zeros(batch_size,1)
-        self.rews = tr.zeros(batch_size,1)
-        self.vals = tr.zeros(batch_size+1,1)
-        self.rets = tr.zeros(batch_size+1,1)
-        self.steer_logprobs = tr.zeros(batch_size,1)
-        self.throttle_logprobs = tr.zeros(batch_size,1)
+        self.speeds = tr.zeros(batch_size+1, 1)
+        self.throttles = tr.zeros(batch_size, 1)
+        self.steers = tr.zeros(batch_size, 1)
+        self.rews = tr.zeros(batch_size, 1)
+        self.vals = tr.zeros(batch_size+1, 1)
+        self.rets = tr.zeros(batch_size+1, 1)
+        self.steer_logprobs = tr.zeros(batch_size, 1)
+        self.throttle_logprobs = tr.zeros(batch_size, 1)
         self.masks = tr.ones(batch_size+1, 1)
         self.bad_masks = tr.ones(batch_size+1, 1)
         self.step = 0
@@ -38,7 +40,7 @@ class Memory:
         self.throttle_logprobs[self.step].copy_(logprobs[1])
         self.masks[self.step + 1].copy_(mask)
         self.bad_masks[self.step + 1].copy_(bad_mask)
-        self.step = (self.step + 1) % self.batch_size
+        self.step = (self.step + 1) % (self.batch_size + 1)
 
     def after_train(self):
         self.imgs[0].copy_(self.imgs[-1])
@@ -46,7 +48,7 @@ class Memory:
         self.masks[0].copy_(self.masks[-1])
         self.bad_masks[0].copy_(self.bad_masks[-1])
 
-    def compute_returns(self, next_val, use_gae, gamma, gae_lambda):
+    def compute_returns(self, next_val, gamma, use_gae=False, gae_lambda=None):
         if use_gae:
             self.vals[-1] = next_val
             gae = 0
@@ -56,10 +58,11 @@ class Memory:
                 gae = gae * self.bad_masks[step + 1]
                 self.rets[step] = gae + self.vals[step]
         else:
-            self.rets[-1] = next_val
+            self.rets[-1].copy_(next_val)
             for step in reversed(range(self.rews.size(0))):
-                self.rets[step] = (self.rets[step + 1] * gamma * self.masks[step + 1] + self.rets[step]) * \
-                                  self.bad_masks[step + 1] + (1 - self.bad_masks[step + 1]) * self.vals[step]
+                self.rets[step].copy_((self.rets[step + 1] * gamma * self.masks[step + 1] + self.rets[step]) * \
+                                  self.bad_masks[step + 1] + (1 - self.bad_masks[step + 1]) * self.vals[step])
+
     def clear(self):
         self.step = 0
 
@@ -78,10 +81,13 @@ class PPOAgent(BaseAgent):
                  clip=0.2, use_clipped=True, entropy_coef=0.01, max_grad_norm=0.5, value_loss_coef=0.5, *args, **kwargs):
         super(PPOAgent, self).__init__(*args, **kwargs)
         self.steer = [-0.3, -0.15, 0, 0.15, 0.3]
-        self.throttle = [0, 0.25, 0.5, 0.75, 1]
-        self.perception = Perception()
-        self.actor_critic = ActorCritic(num_processed=1216,num_hidden=128)
-        self.actor_critic_target = ActorCritic(num_processed=1216, num_hidden=128)
+        self.throttle = [0, 0.2, 0.4, 0.6, 0.8]
+        self.perception = ImpalaPerception()
+        self.actor_critic = ImpalaActorCritic(1216, 128)
+        self.actor_critic_target = ImpalaActorCritic(1216, 128)
+        # self.perception = Perception()
+        # self.actor_critic = ActorCritic(num_processed=1216,num_hidden=128)
+        # self.actor_critic_target = ActorCritic(num_processed=1216, num_hidden=128)
         # load model
         self.actor_critic_target.load_state_dict(self.actor_critic.state_dict())
         self.tau = 1e-3
@@ -96,7 +102,7 @@ class PPOAgent(BaseAgent):
         self.gamma = 0.99
         self.memory = Memory(batch_size=batch_size, img_shape=input_shape)
         self.model_path = model_path
-        self.n = 0
+        self.n = 1
         self.train_step = 0
         self.r_sum = 0
         self.last_state = None
@@ -112,12 +118,28 @@ class PPOAgent(BaseAgent):
         self.value_loss_coef = value_loss_coef
         self.dist1 = Categorical(self.actor_critic.num_hidden, len(self.steer))
         self.dist2 = Categorical(self.actor_critic.num_hidden, len(self.throttle))
-    def save(self):
-        tr.save(self.actor_critic.state_dict(),'{}_actorcritic.h5'.format(self.model_path))
 
-    def load(self,model_paths):
-        self.actor_critic = tr.load(model_paths[0])
-        self.actor_critic_target = tr.load(model_paths[1])
+    def save(self):
+        tr.save(self.perception.state_dict(), self.model_path + '_perception.pth')
+        tr.save(self.actor_critic.state_dict(), self.model_path + '_ac.pth')
+
+    def load(self, model_path, init_by_il=False):
+        if init_by_il:
+            il_state_dict = tr.load(model_path, map_location=torch.device('cpu'))
+            ordered_dict = OrderedDict()
+
+            self.perception.load_state_dict(tr.load(model_path, map_location=torch.device('cpu')), strict=False)
+            for k, v in il_state_dict.items():
+                if 'fc_layer' in k:
+                    ordered_dict[k.replace("fc_layer.", "")] = v
+            self.actor_critic.actor.load_state_dict(ordered_dict, strict=False)
+            self.actor_critic.critic.load_state_dict(ordered_dict, strict=False)
+            self.actor_critic_target.load_state_dict(self.actor_critic.state_dict())
+        else:
+            self.perception.load_state_dict(tr.load(model_path + '_perception.pth'))
+            self.actor_critic.load_state_dict(tr.load(model_path + '_ac.pth'))
+            self.actor_critic_target.load_state_dict(self.actor_critic.state_dict())
+
     def _evaluate(self, imgs, scalars, actions):
         processed = self.perception(imgs, scalars)
         vs, hidden_actor = self.actor_critic(processed)
@@ -162,7 +184,6 @@ class PPOAgent(BaseAgent):
         returns = batches[3]
         old_act_logprobs = batches[4]
         vs_preds = batches[5]
-
 
         # convert to torch tensor
 
@@ -223,6 +244,7 @@ class PPOAgent(BaseAgent):
 
     def run(self, img, speed, meter, train_state):
         if train_state > 0:
+            img /= 255.
             img = np.expand_dims(img, axis=0)
             img = np.transpose(img, (0, 3, 1, 2))
             reshaped_speed = np.reshape(speed,(1, 1))
@@ -233,38 +255,42 @@ class PPOAgent(BaseAgent):
 
             if train_state < 4:
                 if self.train_step > 0:
+                    done = [train_state > 1]
+                    if self.n % (self.batch_size+1) == 0:
+                        self.train_step += 1
+                        self.last_state = {
+                            'img': img,
+                            'speed': speed,
+                            }
+                        self.last_actions = a_t
+                        self.memory.compute_returns(v[0], self.gamma)
+                        return 0, 0, True
+
+                    if done[0]:
+                        print("=======EPISODE DONE======")
+                        print('{} steps | reward sum: {}'.format(self.train_step, self.r_sum))
+                        self.r_sum = 0
+                        self.train_step = 0
+                        self.last_state = None
+                        self.last_actions = None
+                        self.memory.compute_returns(tr.tensor([0]), self.gamma)
+
+                        return 0, 0, True
+
                     self.n += 1
 
-                    reward = meter - self.train_step * 0.01
+                    reward = meter - 0.1
                     if train_state == 2:
                         reward -= 100
                     elif train_state == 3:
                         reward += 100
-                    done = [train_state > 1]
                     self.r_sum += reward
                     mask = tr.FloatTensor([0.0 if done_ else 1.0 for done_ in done])
                     bad_mask = tr.FloatTensor([1.0])
                     self.memory.save(tr.tensor(self.last_state['img'][0]), tr.tensor(self.last_state['speed']), \
                                     tr.tensor(self.last_actions), tr.tensor(reward), tr.tensor(logprobs), \
                                     tr.tensor([v]), mask, bad_mask)
-                    if self.train_step % self.batch_size == self.batch_size - 1:
-                        self.train_step += 1
-                        self.last_state = {
-                                'img': img,
-                            'speed': speed,
-                            }
-                        self.last_actions = a_t
-                        return 0, 0, True
-                    if done[0]:
-                        print("=======EPISODE DONE======")
-                        print('reward sum: {}'.format(self.r_sum))
-                        self.r_sum = 0
-                        self.train_step = 0
-                        self.last_state = None
-                        self.last_actions = None
-
-                        return 0, 0, True
-
+                                        
                 self.last_state = {
                         'img': img,
                         'speed': speed,
@@ -273,22 +299,70 @@ class PPOAgent(BaseAgent):
                 self.train_step += 1
 
             elif train_state == 4:
-                if self.train_step >= self.batch_size:
+                if self.n >= (self.batch_size+1):
                     print("TRAIN START!")
                     self.train()
                     print("TRAIN DONE!")
                     self.save()
                     print("SAVE DONE!")
-                    self.train_step = 0
+                    self.n = 1
+                    self.memory.after_train()
                 return 0, 0, False
 
-            return a_t[0], a_t[1], False
+            return self.steer[a_t[0]], self.throttle[a_t[1]], False
         return 0, 0, False
+
+
+class ImpalaPerception(nn.Module):
+    def __init__(self):
+        super(ImpalaPerception, self).__init__()
+
+        self.conv_layer = nn.Sequential(
+                ImpalaBlock(in_channels=3, out_channels=16),
+                ImpalaBlock(in_channels=16, out_channels=32),
+                ImpalaBlock(in_channels=32, out_channels=64),
+                nn.Flatten(),
+                )
+
+    def forward(self, img, scalar):
+        feature = self.conv_layer(img)
+        total_feature = torch.cat((feature, scalar), 1)
+        return total_feature
+
+
+class ImpalaActorCritic(nn.Module):
+    def __init__(self, num_processed, num_hidden):
+        super(ImpalaActorCritic, self).__init__()
+        
+        feature_size = 13057
+        self.actor = nn.Sequential(
+            nn.Linear(feature_size, 256),
+            nn.Dropout(0.5),
+            nn.ReLU(),
+            nn.Linear(256, num_hidden),
+            nn.Dropout(0.5),
+            nn.ReLU(),
+        )
+        self.critic = nn.Sequential(
+            nn.Linear(feature_size, 256),
+            nn.Dropout(0.5),
+            nn.ReLU(),
+            nn.Linear(256, num_hidden),
+            nn.Dropout(0.5),
+            nn.ReLU(),
+        )
+        self.num_hidden = num_hidden
+        self.critic_linear = nn.Linear(num_hidden, 1)
+
+    def forward(self, processed):
+        hidden_critic = self.critic(processed)
+        hidden_actor = self.actor(processed)
+        return self.critic_linear(hidden_critic), hidden_actor
 
 
 class Perception(nn.Module):
     def __init__(self):
-        super(Perception,self).__init__()
+        super(Perception, self).__init__()
         self.img_extractor = nn.Sequential(
             nn.Conv2d(3, 24, 5, 2),
             nn.ReLU(inplace=True),
@@ -321,9 +395,9 @@ class ActorCritic(nn.Module):
     def __init__(self, num_processed, num_hidden=128):
         super(ActorCritic,self).__init__()
         self.actor = nn.Sequential(
-            nn.Linear(num_processed,num_hidden),
+            nn.Linear(num_processed, num_hidden),
             nn.Tanh(),
-            nn.Linear(num_hidden,num_hidden),
+            nn.Linear(num_hidden, num_hidden),
             nn.Tanh()
         )
         self.critic = nn.Sequential(
@@ -333,7 +407,8 @@ class ActorCritic(nn.Module):
             nn.Tanh()
         )
         self.num_hidden = num_hidden
-        self.critic_linear = nn.Linear(num_hidden,1)
+        self.critic_linear = nn.Linear(num_hidden, 1)
+
     def forward(self, processed):
         hidden_critic = self.critic(processed)
         hidden_actor = self.actor(processed)

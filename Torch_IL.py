@@ -5,22 +5,12 @@ import Torch_IL_model.const as const
 import copy
 import numpy as np
 from PIL import Image
+from utils.utils import *
 import torch
 import torchvision.transforms as transforms
 
-def numpy_to_pil(image_):
-    image = copy.deepcopy(image_)
-    
-    image = (image - np.min(image))/(np.max(image) - np.min(image))
-
-    image *= 255
-    image = image.astype('uint8')
-
-    im_obj = Image.fromarray(image)
-    return im_obj
-
 class IL_TEST(TorchPilot):
-    def __init__(self, model_path=None, *args, **kwargs):
+    def __init__(self, *args, **kwargs):
         super(IL_TEST, self).__init__(*args, **kwargs)
 
 
@@ -50,15 +40,16 @@ class IL_TEST(TorchPilot):
             train_test_split=0.9,
             use_cuda = False
         )
+
+    def load(self, model_path):
         self.model.load(model_path)
 
     def run(self, img, speed):
         #(120, 160, 3)
         img = numpy_to_pil(img)
-        img = self.transform(img).float().numpy()
-        img = np.expand_dims(img, 0)
-        action = self.model.get_action(torch.Tensor(img), torch.Tensor([[speed]]))
+        img = self.transform(img).float().unsqueeze(0)
+        action = self.model.get_action(img, torch.Tensor([[speed]]))
 
-        return 2 * action[0][0], action[0][1] # 0.4 for throttle is the best
+        return action[0][0], action[0][1] # 0.4 for throttle is the best
 
 
