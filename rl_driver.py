@@ -263,41 +263,14 @@ class RL_Driver():
         def load_model(kl, model_path):
             start = time.time()
             print('loading model', model_path)
-            kl.load(model_path)
+            kl.load(model_path, True)
             print('finished loading in %s sec.' % (str(time.time() - start)) )
-
-        def load_weights(kl, weights_path):
-            start = time.time()
-            try:
-                print('loading model weights', weights_path)
-                kl.actor.load_weights(weights_path)
-                print('finished loading in %s sec.' % (str(time.time() - start)) )
-            except Exception as e:
-                print(e)
-                print('ERR>> problems loading weights', weights_path)
-
+        
         # Set the rl network
         kl = self.model_dict[self.model_type](num_action=2, input_shape=(120, 160, 3), batch_size=self.BATCH_SIZE, model_path = self.model_path)
 
         if self.weight_path:
-            load_weights(kl, self.weight_path)
-
-        if not self.training:
-            model_reload_cb = None
-            if '.h5' in self.model_path or '.uff' in self.model_path or 'tflite' in self.model_path or '.pkl' in self.model_path:
-                #when we have a .h5 extension
-                #load everything from the model file
-                load_model(kl, self.model_path)
-
-                def reload_model(filename):
-                    load_model(kl, filename)
-
-                model_reload_cb = reload_model
-
-            else:
-                print("ERR>> Unknown extension type on model file!!")
-                return
-
+            load_model(kl, self.weight_path)
         #these parts will reload the model file, but only when ai is running so we don't interrupt user driving
         # self.V.add(FileWatcher(self.model_path), outputs=['modelfile/dirty'], run_condition="ai_running")
         # self.V.add(DelayedTrigger(100), inputs=['modelfile/dirty'], outputs=['modelfile/reload'], run_condition="ai_running")

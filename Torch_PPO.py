@@ -4,6 +4,8 @@ import numpy as np
 import torch.optim as optim
 import torch.nn.functional as F
 from distributions import Categorical
+from Torch_IL_model.networks import *
+from collections import OrderedDict
 import random
 
 from collections import deque
@@ -79,10 +81,13 @@ class PPOAgent(BaseAgent):
                  clip=0.2, use_clipped=True, entropy_coef=0.01, max_grad_norm=0.5, value_loss_coef=0.5, *args, **kwargs):
         super(PPOAgent, self).__init__(*args, **kwargs)
         self.steer = [-0.3, -0.15, 0, 0.15, 0.3]
-        self.throttle = [0, 0.25, 0.5, 0.75, 1]
-        self.perception = Perception()
-        self.actor_critic = ActorCritic(num_processed=1216,num_hidden=128)
-        self.actor_critic_target = ActorCritic(num_processed=1216, num_hidden=128)
+        self.throttle = [0, 0.2, 0.4, 0.6, 0.8]
+        self.perception = ImpalaPerception()
+        self.actor_critic = ImpalaActorCritic(1216, 128)
+        self.actor_critic_target = ImpalaActorCritic(1216, 128)
+        # self.perception = Perception()
+        # self.actor_critic = ActorCritic(num_processed=1216,num_hidden=128)
+        # self.actor_critic_target = ActorCritic(num_processed=1216, num_hidden=128)
         # load model
         self.actor_critic_target.load_state_dict(self.actor_critic.state_dict())
         self.tau = 1e-3
@@ -113,12 +118,28 @@ class PPOAgent(BaseAgent):
         self.value_loss_coef = value_loss_coef
         self.dist1 = Categorical(self.actor_critic.num_hidden, len(self.steer))
         self.dist2 = Categorical(self.actor_critic.num_hidden, len(self.throttle))
-    def save(self):
-        tr.save(self.actor_critic.state_dict(),'{}_actorcritic.h5'.format(self.model_path))
 
-    def load(self,model_paths):
-        self.actor_critic = tr.load(model_paths[0])
-        self.actor_critic_target = tr.load(model_paths[1])
+    def save(self):
+        tr.save(self.perception.state_dict(), self.model_path + '_perception.pth')
+        tr.save(self.actor_critic.state_dict(), self.model_path + '_ac.pth')
+
+    def load(self, model_path, init_by_il=False):
+        if init_by_il:
+            il_state_dict = tr.load(model_path, map_location=torch.device('cpu'))
+            ordered_dict = OrderedDict()
+
+            self.perception.load_state_dict(tr.load(model_path, map_location=torch.device('cpu')), strict=False)
+            for k, v in il_state_dict.items():
+                if 'fc_layer' in k:
+                    ordered_dict[k.replace("fc_layer.", "")] = v
+            self.actor_critic.actor.load_state_dict(ordered_dict, strict=False)
+            self.actor_critic.critic.load_state_dict(ordered_dict, strict=False)
+            self.actor_critic_target.load_state_dict(self.actor_critic.state_dict())
+        else:
+            self.perception.load_state_dict(tr.load(model_path + '_perception.pth'))
+            self.actor_critic.load_state_dict(tr.load(model_path + '_ac.pth'))
+            self.actor_critic_target.load_state_dict(self.actor_critic.state_dict())
+
     def _evaluate(self, imgs, scalars, actions):
         processed = self.perception(imgs, scalars)
         vs, hidden_actor = self.actor_critic(processed)
@@ -247,7 +268,7 @@ class PPOAgent(BaseAgent):
 
                     if done[0]:
                         print("=======EPISODE DONE======")
-                        print('reward sum: {}'.format(self.r_sum))
+                        print('{} steps | reward sum: {}'.format(self.train_step, self.r_sum))
                         self.r_sum = 0
                         self.train_step = 0
                         self.last_state = None
@@ -292,9 +313,56 @@ class PPOAgent(BaseAgent):
         return 0, 0, False
 
 
+class ImpalaPerception(nn.Module):
+    def __init__(self):
+        super(ImpalaPerception, self).__init__()
+
+        self.conv_layer = nn.Sequential(
+                ImpalaBlock(in_channels=3, out_channels=16),
+                ImpalaBlock(in_channels=16, out_channels=32),
+                ImpalaBlock(in_channels=32, out_channels=64),
+                nn.Flatten(),
+                )
+
+    def forward(self, img, scalar):
+        feature = self.conv_layer(img)
+        total_feature = torch.cat((feature, scalar), 1)
+        return total_feature
+
+
+class ImpalaActorCritic(nn.Module):
+    def __init__(self, num_processed, num_hidden):
+        super(ImpalaActorCritic, self).__init__()
+        
+        feature_size = 13057
+        self.actor = nn.Sequential(
+            nn.Linear(feature_size, 256),
+            nn.Dropout(0.5),
+            nn.ReLU(),
+            nn.Linear(256, num_hidden),
+            nn.Dropout(0.5),
+            nn.ReLU(),
+        )
+        self.critic = nn.Sequential(
+            nn.Linear(feature_size, 256),
+            nn.Dropout(0.5),
+            nn.ReLU(),
+            nn.Linear(256, num_hidden),
+            nn.Dropout(0.5),
+            nn.ReLU(),
+        )
+        self.num_hidden = num_hidden
+        self.critic_linear = nn.Linear(num_hidden, 1)
+
+    def forward(self, processed):
+        hidden_critic = self.critic(processed)
+        hidden_actor = self.actor(processed)
+        return self.critic_linear(hidden_critic), hidden_actor
+
+
 class Perception(nn.Module):
     def __init__(self):
-        super(Perception,self).__init__()
+        super(Perception, self).__init__()
         self.img_extractor = nn.Sequential(
             nn.Conv2d(3, 24, 5, 2),
             nn.ReLU(inplace=True),
@@ -327,9 +395,9 @@ class ActorCritic(nn.Module):
     def __init__(self, num_processed, num_hidden=128):
         super(ActorCritic,self).__init__()
         self.actor = nn.Sequential(
-            nn.Linear(num_processed,num_hidden),
+            nn.Linear(num_processed, num_hidden),
             nn.Tanh(),
-            nn.Linear(num_hidden,num_hidden),
+            nn.Linear(num_hidden, num_hidden),
             nn.Tanh()
         )
         self.critic = nn.Sequential(
@@ -339,7 +407,8 @@ class ActorCritic(nn.Module):
             nn.Tanh()
         )
         self.num_hidden = num_hidden
-        self.critic_linear = nn.Linear(num_hidden,1)
+        self.critic_linear = nn.Linear(num_hidden, 1)
+
     def forward(self, processed):
         hidden_critic = self.critic(processed)
         hidden_actor = self.actor(processed)

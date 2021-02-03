@@ -49,8 +49,7 @@ class IL_TEST(TorchPilot):
         img = numpy_to_pil(img)
         img = self.transform(img).float().unsqueeze(0)
         action = self.model.get_action(img, torch.Tensor([[speed]]))
-        print(action)
 
-        return 2 * action[0][0], action[0][1] # 0.4 for throttle is the best
+        return action[0][0], action[0][1] # 0.4 for throttle is the best
 
 
