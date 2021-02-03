@@ -279,7 +279,7 @@ class PPOAgent(BaseAgent):
 
                     self.n += 1
 
-                    reward = meter - 0.1
+                    reward = meter - 1
                     if train_state == 2:
                         reward -= 100
                     elif train_state == 3:

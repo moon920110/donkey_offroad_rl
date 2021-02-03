@@ -282,6 +282,7 @@ def train(cfg, tub_names, model_name, transfer_model, model_type, continuous, au
     use the specified data in tub_names to train an artifical neural network
     saves the output trained model as model_name
     ''' 
+    device = 'cuda' if torch.cuda.is_available else 'cpu'
     verbose = cfg.VERBOSE_TRAIN
 
     if model_type is None:
@@ -298,7 +299,7 @@ def train(cfg, tub_names, model_name, transfer_model, model_type, continuous, au
     else:
         train_type = model_type
 
-    kl = TorchIL()
+    kl = TorchIL(device=device)
 
     print('training with model type', type(kl))
 
